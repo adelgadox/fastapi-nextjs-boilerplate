@@ -607,8 +607,9 @@ def disable_totp(request: Request, data: DisableRequest, current_user: User = De
 - **Strict rate limit on `/verify-backup`** — 5/hour vs 10/min on TOTP. Backup codes have no time rotation, so brute force protection is critical.
 - **Partial token scope** — `"scope": "2fa_pending"` prevents reuse of the intermediate token for anything other than completing 2FA.
 
-### Reference implementation
-Full working code: `bioflow/backend/app/routers/totp.py`, `bioflow/backend/app/models/totp_backup_code.py`
+### Reference files
+- `backend/app/routers/totp.py` — full router implementation
+- `backend/app/models/totp_backup_code.py` — backup codes model
 
 ---
 

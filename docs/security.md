@@ -73,7 +73,7 @@ class CloudflareOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 ```
 
-Where `is_cloudflare_request` checks `CF-Connecting-IP` header and validates source IP against Cloudflare CIDR ranges. See `bioflow/backend/app/utils/cloudflare.py` for the full implementation.
+Where `is_cloudflare_request` checks `CF-Connecting-IP` header and validates source IP against Cloudflare CIDR ranges (hardcoded IPv4 + IPv6 CIDR list, update periodically from [cloudflare.com/ips](https://www.cloudflare.com/ips/)).
 
 **Why:** Without this, the backend Railway URL is publicly accessible — rate limiting and Cloudflare WAF can be bypassed.
 
@@ -122,7 +122,7 @@ Tighten `script-src` and `connect-src` once you know which third-party domains y
 
 Every project that accepts user-generated content (bios, descriptions, names) needs `strip_html()` applied at the schema layer.
 
-Copy `bioflow/backend/app/utils/sanitize.py` and apply to Pydantic schemas using `@field_validator`.
+Create `backend/app/utils/sanitize.py` and apply to Pydantic schemas using `@field_validator`.
 
 Key functions:
 - `strip_html(text)` — removes all HTML/XML tags, decodes entities
@@ -211,8 +211,6 @@ Run through this before launch:
 
 ## Reference implementations
 
-- Full security implementation: `/Users/antonydelgado/Projects/bioflow`
-- Cloudflare middleware: `bioflow/backend/app/utils/cloudflare.py` + `main.py`
-- Input sanitization: `bioflow/backend/app/utils/sanitize.py`
-- URL security: `bioflow/backend/app/utils/url_security.py`
-- Frontend headers: `bioflow/frontend/next.config.ts`
+- `backend/app/utils/cloudflare.py` — Cloudflare IP extraction + CIDR validation
+- `backend/app/utils/sanitize.py` — input sanitization helpers (create per project)
+- `frontend/next.config.ts` — security headers including CSP and HSTS
