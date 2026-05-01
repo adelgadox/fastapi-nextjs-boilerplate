@@ -54,6 +54,14 @@ Cloudinary, AI/OpenAI, Langfuse, Stripe, Redis, 2FA/TOTP, GeoIP/MaxMind, ElevenL
 See `docs/optional-layers.md` for packages, env vars, and code patterns for each.
 To activate: uncomment in `requirements.txt`, uncomment in `config.py`, set env vars.
 
+## Security
+
+See `docs/security.md` for:
+- What's active by default (rate limiting, JWT denylist, security headers, etc.)
+- Required per-project steps (Cloudflare-only mode, CSP headers, input sanitization)
+- Pre-launch security checklist
+- Optional security layers (2FA, webhook verification, Safe Browsing, etc.)
+
 ## Adding a new feature
 
 1. Add model in `backend/app/models/` + import in `alembic/env.py`
