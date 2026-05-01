@@ -194,7 +194,7 @@ async def stripe_webhook(request: Request):
 
 ## Redis — Caching & Queues
 
-**When to use:** session store, cache expensive queries, rate limiting store, background task queues.
+**When to use:** cache expensive queries, rate limiting store, background task queues, batched counters.
 
 ### Install
 ```
@@ -204,7 +204,9 @@ redis==5.2.1
 
 ### Config (`config.py`)
 ```python
-redis_url: str = "redis://localhost:6379/0"
+# Redis (optional — degrades gracefully when absent)
+# Railway injects REDIS_URL automatically when the Redis addon is added.
+redis_url: str = ""
 ```
 
 ### Env vars
@@ -212,34 +214,202 @@ redis_url: str = "redis://localhost:6379/0"
 REDIS_URL=redis://localhost:6379/0      # or rediss://... for TLS
 ```
 
-### Usage pattern
+### Graceful degradation pattern (recommended)
+
+Design Redis as optional: when `REDIS_URL` is unset or Redis is down, the app falls back to the DB path without crashing.
+
 ```python
-import redis.asyncio as aioredis
+# utils/cache.py
+import logging
+import os
+from typing import Optional
 
-# In main.py lifespan:
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    app.state.redis = aioredis.from_url(settings.redis_url, decode_responses=True)
-    yield
-    await app.state.redis.aclose()
+logger = logging.getLogger(__name__)
 
-# In route:
-async def get_cached(key: str, request: Request):
-    cached = await request.app.state.redis.get(key)
-    if cached:
-        return json.loads(cached)
-    data = await compute_expensive_thing()
-    await request.app.state.redis.setex(key, 300, json.dumps(data))  # TTL 5min
-    return data
+_client = None
+_unavailable = False  # once confirmed down, skip further attempts
+
+
+def _get_client():
+    global _client, _unavailable
+    if _unavailable:
+        return None
+    if _client is not None:
+        return _client
+    url = os.environ.get("REDIS_URL", "")
+    if not url:
+        _unavailable = True
+        return None
+    try:
+        import redis as redis_lib
+        _client = redis_lib.from_url(url, decode_responses=True, socket_timeout=0.5)
+        _client.ping()
+        logger.info("Redis connected (%s)", url.split("@")[-1])
+    except Exception:
+        logger.warning("Redis unavailable — cache disabled")
+        _client = None
+        _unavailable = True
+    return _client
+
+
+def get_cached(key: str) -> Optional[str]:
+    r = _get_client()
+    if r is None:
+        return None
+    try:
+        return r.get(key)
+    except Exception:
+        return None
+
+
+def set_cached(key: str, value: str, ttl: int = 300) -> None:
+    r = _get_client()
+    if r is None:
+        return
+    try:
+        r.setex(key, ttl, value)
+    except Exception:
+        pass
+
+
+def invalidate(key: str) -> None:
+    r = _get_client()
+    if r is None:
+        return
+    try:
+        r.delete(key)
+    except Exception:
+        pass
 ```
 
-### docker-compose addition
+### Batched counter pattern (high-traffic writes)
+
+Useful for click/view counters: accumulate in Redis, flush to DB every N hits.
+
+```python
+_FLUSH_EVERY = 50
+
+def increment_counter(entity_id: str) -> Optional[int]:
+    """Returns new count, or None if Redis unavailable (caller writes to DB directly)."""
+    r = _get_client()
+    if r is None:
+        return None
+    try:
+        return r.incr(f"counter:{entity_id}")
+    except Exception:
+        return None
+
+def pop_counter(entity_id: str) -> int:
+    """Atomically read and reset counter. Returns 0 if Redis unavailable."""
+    r = _get_client()
+    if r is None:
+        return 0
+    try:
+        pipe = r.pipeline()
+        pipe.getdel(f"counter:{entity_id}")
+        raw = pipe.execute()[0]
+        return int(raw) if raw else 0
+    except Exception:
+        return 0
+
+def should_flush(count: Optional[int]) -> bool:
+    return count is not None and count >= _FLUSH_EVERY
+```
+
+### Local docker-compose
 ```yaml
 redis:
   image: redis:7-alpine
   ports:
     - "6379:6379"
 ```
+
+### Railway setup
+
+1. Open your Railway project → **New** → **Database** → **Add Redis**
+2. Railway injects `REDIS_URL` automatically into all services in the project — no manual env var needed.
+3. The URL format is `redis://default:<password>@<host>:<port>` (no TLS on internal network).
+4. For TLS (external connections): use `rediss://` scheme and the public URL from Railway → Redis → Connect.
+
+### Notes
+- `socket_timeout=0.5` — fail fast on Redis issues, don't block requests
+- Never store sensitive data (tokens, PII) in Redis without encryption
+- Redis on Railway is **ephemeral** by default — don't use as primary data store
+
+---
+
+## PgBouncer — Connection Pooling
+
+**When to use:** Railway (or any PaaS) where each app instance opens its own DB connections. Prevents exhausting PostgreSQL's connection limit under load.
+
+**Why:** PostgreSQL handles ~100 concurrent connections by default. Without pooling, multiple app replicas + Alembic migrations can exhaust this limit, causing `too many connections` errors.
+
+### How it works
+
+PgBouncer sits between FastAPI and PostgreSQL, multiplexing many app connections into a small pool of real DB connections. In **transaction mode**, a server connection is only held for the duration of a transaction, then returned to the pool.
+
+### SQLAlchemy changes (already in `database.py`)
+
+`PGBOUNCER_MODE=true` switches to `NullPool` + disables prepared statements:
+
+```python
+# database.py (already implemented — just set the env var)
+if settings.pgbouncer_mode:
+    engine = create_engine(
+        settings.database_url,
+        poolclass=NullPool,            # PgBouncer manages the pool, not SQLAlchemy
+        connect_args={"prepare_threshold": None},  # prepared statements incompatible with transaction mode
+    )
+```
+
+### Railway setup
+
+**1. Add a new Railway service** using image `edoburu/pgbouncer:latest`
+
+> Do NOT use `bitnami/pgbouncer` — removed from Docker Hub after Broadcom acquisition.
+
+**2. Set these env vars on the pgbouncer service:**
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `postgres://postgres:<password>@<tcp-proxy-host>:<tcp-proxy-port>/railway` |
+| `DATABASES_HOST` | `<tcp-proxy-host>` (e.g. `gondola.proxy.rlwy.net`) — **host only, no port** |
+| `DATABASES_PORT` | `<tcp-proxy-port>` (e.g. `27789`) |
+| `DATABASES_USER` | `postgres` |
+| `DATABASES_PASSWORD` | your Postgres password |
+| `DATABASES_DBNAME` | `railway` |
+| `POOL_MODE` | `transaction` |
+| `MAX_CLIENT_CONN` | `100` |
+| `DEFAULT_POOL_SIZE` | `20` |
+
+> **Critical:** `DATABASES_HOST` must be the hostname **without** the port. If you put `host:port` in `DATABASES_HOST`, PgBouncer treats the whole string as the hostname and DNS resolution fails.
+
+> **Why the public TCP proxy?** PgBouncer runs as a Docker container — Railway's private network (`postgres.railway.internal`) is only reachable by Railway-native services. Use the TCP proxy host from Railway → Postgres → Connect → Public URL.
+
+**3. Get PgBouncer's private domain:**
+
+Railway → pgbouncer service → Settings → Networking → Private Domain
+(e.g. `pgbouncer.railway.internal`, port `6432`)
+
+**4. Update FastAPI env vars:**
+
+```
+DATABASE_URL=postgresql://postgres:<password>@pgbouncer.railway.internal:6432/railway
+PGBOUNCER_MODE=true
+```
+
+**5. Verify it's working** — in Railway → pgbouncer service logs you should see:
+```
+LOG listening on 0.0.0.0:6432
+LOG S-0x...: railway/postgres@<ip>:<port> new connection to server
+```
+
+The second line confirms PgBouncer connected to Postgres successfully.
+
+### Notes
+- `PGBOUNCER_MODE=false` (default) — standard SQLAlchemy pool, fine for single-instance local/staging
+- `PGBOUNCER_MODE=true` — production Railway deployments with multiple replicas
+- Alembic migrations must run **before** switching to PgBouncer URL (prepared statements are used during migration)
 
 ---
 
