@@ -415,7 +415,7 @@ The second line confirms PgBouncer connected to Postgres successfully.
 
 ## 2FA / TOTP — Authenticator App Codes
 
-**When to use:** admin / superadmin accounts, high-security user actions.
+**When to use:** any project where users should be able to protect their account with an authenticator app (Google Authenticator, Authy, etc.).
 
 ### Install
 ```
@@ -426,61 +426,189 @@ qrcode[pil]==8.0
 
 ### Config (`config.py`)
 ```python
-totp_issuer: str = "My App"
+totp_issuer: str = "My App"   # shown in the authenticator app
 ```
 
-### DB columns (add to User model)
+---
+
+### DB changes
+
+**1. Add two columns to the `User` model:**
 ```python
-totp_secret: str | None = None       # encrypted at rest recommended
-totp_enabled: bool = False
-totp_backup_codes: list[str] = []    # bcrypt-hashed, never plaintext
+totp_secret: Mapped[str | None] = mapped_column(String, nullable=True)
+totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 ```
 
-### Usage pattern
+**2. Create a separate `TotpBackupCode` table** — do NOT store backup codes as a column in `users`:
 ```python
-import pyotp, qrcode, io, base64
+# models/totp_backup_code.py
+from sqlalchemy import Column, DateTime, ForeignKey, String
+from sqlalchemy.dialects.postgresql import UUID
+import uuid
+from app.database import Base
 
-def generate_totp_secret() -> str:
-    return pyotp.random_base32()
+class TotpBackupCode(Base):
+    __tablename__ = "totp_backup_codes"
 
-def get_totp_uri(secret: str, email: str) -> str:
-    return pyotp.totp.TOTP(secret).provisioning_uri(
-        name=email, issuer_name=settings.totp_issuer
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    code_hash = Column(String, nullable=False)       # bcrypt hash — never plaintext
+    used_at = Column(DateTime(timezone=True), nullable=True)   # None = available
+```
+
+Import in `alembic/env.py`, then:
+```bash
+alembic revision --autogenerate -m "add totp columns and backup codes table"
+alembic upgrade head
+```
+
+---
+
+### Login flow with 2FA
+
+Standard login changes to a two-step flow when `totp_enabled=True`:
+
+1. `POST /auth/login` — validates password, returns a **partial token** (`scope: "2fa_pending"`, 5 min expiry) instead of a full access token.
+2. User submits partial token + TOTP code (or backup code) to complete login.
+
+**Partial token creation:**
+```python
+def create_partial_token(user_id: str) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=5)
+    return jwt.encode(
+        {"sub": user_id, "exp": expire, "jti": str(uuid.uuid4()), "scope": "2fa_pending"},
+        settings.secret_key,
+        algorithm=settings.algorithm,
     )
-
-def get_qr_base64(uri: str) -> str:
-    img = qrcode.make(uri)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode()
-
-def verify_totp(secret: str, code: str) -> bool:
-    return pyotp.TOTP(secret).verify(code, valid_window=1)
 ```
 
-### Backup codes
+**Partial token validation (shared helper):**
 ```python
-import secrets, bcrypt
-
-def generate_backup_codes(n: int = 10) -> tuple[list[str], list[str]]:
-    """Returns (plaintext_to_show_once, hashed_to_store)."""
-    codes = [secrets.token_hex(5) for _ in range(n)]
-    hashed = [bcrypt.hashpw(c.encode(), bcrypt.gensalt()).decode() for c in codes]
-    return codes, hashed
-
-def verify_backup_code(code: str, hashed_codes: list[str]) -> int | None:
-    """Returns index of matched code, or None. Caller must delete used code."""
-    for i, h in enumerate(hashed_codes):
-        if bcrypt.checkpw(code.encode(), h.encode()):
-            return i
-    return None
+def _verify_partial_token(partial_token: str) -> str:
+    """Decode a 2fa_pending token and return user_id. Raises 401 on failure."""
+    try:
+        payload = jwt.decode(partial_token, settings.secret_key, algorithms=[settings.algorithm])
+    except jwt.PyJWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired 2FA session")
+    if payload.get("scope") != "2fa_pending":
+        raise HTTPException(status_code=401, detail="Invalid token scope")
+    user_id: str | None = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user_id
 ```
 
-### Notes
-- **Never store backup codes in plaintext** — hash with bcrypt same as passwords
-- Show plaintext codes exactly once (on setup screen), then discard
-- Rate-limit backup code endpoint (3 attempts / hour)
-- Store `totp_secret` encrypted in DB for defense in depth
+---
+
+### Router — `routers/totp.py`
+
+Five endpoints, all rate-limited:
+
+| Endpoint | Auth required | Rate limit | Purpose |
+|----------|--------------|-----------|---------|
+| `POST /auth/2fa/setup` | full JWT | 10/min | Generate secret + QR code. Does NOT enable 2FA yet. |
+| `POST /auth/2fa/enable` | full JWT | 10/min | Verify first TOTP code, activate 2FA, return one-time backup codes. |
+| `POST /auth/2fa/verify` | partial token | 10/min | Exchange partial token + TOTP code → full access token. |
+| `POST /auth/2fa/verify-backup` | partial token | **5/hour** | Exchange partial token + backup code → full access token. Consumes code. |
+| `DELETE /auth/2fa/disable` | full JWT | 10/min | Disable 2FA after verifying current TOTP. Deletes all backup codes. |
+
+**Setup:**
+```python
+@router.post("/setup")
+@limiter.limit("10/minute")
+def setup_totp(request: Request, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2FA is already enabled")
+    secret = pyotp.random_base32()
+    uri = pyotp.TOTP(secret).provisioning_uri(name=current_user.email, issuer_name=settings.totp_issuer)
+    current_user.totp_secret = secret   # pending — not active until /enable succeeds
+    db.commit()
+    return {"secret": secret, "qr_data_url": f"data:image/png;base64,{_qr_png_b64(uri)}"}
+```
+
+**Enable (returns backup codes — shown once):**
+```python
+_BACKUP_CODE_COUNT = 8
+_BACKUP_CODE_LENGTH = 10  # hex chars
+
+def _generate_backup_codes() -> tuple[list[str], list[str]]:
+    plain = [secrets.token_hex(_BACKUP_CODE_LENGTH // 2) for _ in range(_BACKUP_CODE_COUNT)]
+    hashed = [bcrypt.hashpw(c.encode(), bcrypt.gensalt()).decode() for c in plain]
+    return plain, hashed
+
+@router.post("/enable")
+@limiter.limit("10/minute")
+def enable_totp(request: Request, data: EnableRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.totp_enabled:
+        raise HTTPException(status_code=400, detail="2FA is already enabled")
+    if not current_user.totp_secret:
+        raise HTTPException(status_code=400, detail="Call /auth/2fa/setup first")
+    if not pyotp.TOTP(current_user.totp_secret).verify(data.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid verification code")
+
+    plain_codes, hashed_codes = _generate_backup_codes()
+    db.query(TotpBackupCode).filter(TotpBackupCode.user_id == current_user.id).delete()
+    for code_hash in hashed_codes:
+        db.add(TotpBackupCode(user_id=current_user.id, code_hash=code_hash))
+    current_user.totp_enabled = True
+    db.commit()
+    return {"backup_codes": plain_codes}   # show once — user must save these
+```
+
+**Verify with backup code (single-use, strict rate limit):**
+```python
+def _verify_and_consume_backup_code(user_id: str, code: str, db: Session) -> bool:
+    rows = db.query(TotpBackupCode).filter(
+        TotpBackupCode.user_id == user_id,
+        TotpBackupCode.used_at.is_(None)
+    ).all()
+    for row in rows:
+        if bcrypt.checkpw(code.encode(), row.code_hash.encode()):
+            row.used_at = datetime.now(timezone.utc)
+            db.commit()
+            return True
+    return False
+
+@router.post("/verify-backup")
+@limiter.limit("5/hour")    # strict — brute force protection
+def verify_backup_code(request: Request, data: VerifyBackupRequest, db: Session = Depends(get_db)):
+    user_id = _verify_partial_token(data.partial_token)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user or not user.totp_enabled:
+        raise HTTPException(status_code=401, detail="Invalid 2FA session")
+    if not _verify_and_consume_backup_code(user_id, data.code.strip(), db):
+        raise HTTPException(status_code=400, detail="Invalid or already used backup code")
+    return Token(access_token=create_access_token(str(user.id)))
+```
+
+**Disable (verifies current TOTP, wipes all backup codes):**
+```python
+@router.delete("/disable", status_code=204)
+@limiter.limit("10/minute")
+def disable_totp(request: Request, data: DisableRequest, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not current_user.totp_enabled or not current_user.totp_secret:
+        raise HTTPException(status_code=400, detail="2FA is not enabled")
+    if not pyotp.TOTP(current_user.totp_secret).verify(data.code, valid_window=1):
+        raise HTTPException(status_code=400, detail="Invalid verification code")
+    db.query(TotpBackupCode).filter(TotpBackupCode.user_id == current_user.id).delete()
+    current_user.totp_enabled = False
+    current_user.totp_secret = None
+    db.commit()
+```
+
+---
+
+### Security design
+
+- **Backup codes stored hashed** — bcrypt per code, same security as passwords. Never store plaintext.
+- **Shown exactly once** — `/enable` response. Not retrievable after that.
+- **Single-use** — `used_at` is set on consumption; subsequent checks skip used rows.
+- **Separate table** — `totp_backup_codes` with `CASCADE` delete. Clean deletion when 2FA disabled or user deleted.
+- **Strict rate limit on `/verify-backup`** — 5/hour vs 10/min on TOTP. Backup codes have no time rotation, so brute force protection is critical.
+- **Partial token scope** — `"scope": "2fa_pending"` prevents reuse of the intermediate token for anything other than completing 2FA.
+
+### Reference implementation
+Full working code: `bioflow/backend/app/routers/totp.py`, `bioflow/backend/app/models/totp_backup_code.py`
 
 ---
 
