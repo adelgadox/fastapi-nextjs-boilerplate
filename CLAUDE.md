@@ -30,9 +30,21 @@
 
 ## Git workflow
 
-- Never push directly to main — always branch + PR.
-- Commit freely, push only when explicitly asked.
-- Every push may trigger a Vercel deploy (cost). Ask before pushing.
+**Branch discipline — non-negotiable:**
+- `main` is protected. Never commit or push directly to `main`.
+- Every feature, bug fix, refactor, or chore starts from a fresh branch off `main`:
+  ```
+  git checkout main && git pull
+  git checkout -b feat/my-feature   # or fix/, refactor/, chore/, docs/
+  ```
+- Branch naming: `feat/`, `fix/`, `refactor/`, `chore/`, `docs/` prefix + short slug.
+- Open a PR to `main` when the work is done. Squash or merge — never force-push to main.
+
+**Commit & push rules:**
+- Commit freely and often on your branch — no approval needed.
+- `git push` requires explicit user approval (may trigger Vercel deploy = cost).
+- `gh pr create` requires explicit user approval (visible to others).
+- After completing work, say: "Commiteado en `branch-name`. ¿Hacemos push y PR?"
 
 ## Optional layers
 
