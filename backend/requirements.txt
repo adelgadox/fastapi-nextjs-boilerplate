@@ -1,3 +1,4 @@
+# ── Core ─────────────────────────────────────────────────────────────────────
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 sqlalchemy==2.0.36
@@ -11,8 +12,36 @@ requests==2.32.3
 resend==2.10.0
 httpx==0.27.2
 user-agents==2.2.0
-cloudinary==1.41.0
 slowapi==0.1.9
 jinja2==3.1.4
 alembic==1.14.1
 sentry-sdk[fastapi]>=2.0.0
+
+# ── Optional layers ───────────────────────────────────────────────────────────
+# Uncomment the section(s) you need. See docs/optional-layers.md for setup.
+
+# Cloudinary — image / video uploads
+# cloudinary==1.41.0
+
+# AI / OpenAI-compatible providers (OpenAI, DeepSeek, Groq, etc.)
+# openai==1.55.0
+
+# Langfuse — LLM observability (traces, evals, prompts)
+# langfuse==2.26.0
+
+# Stripe — payments, subscriptions, webhooks
+# stripe==11.2.0
+
+# Redis — caching, rate limiting, queues
+# redis==5.2.1
+
+# 2FA / TOTP — authenticator app codes + backup codes
+# pyotp==2.9.0
+# qrcode[pil]==8.0
+
+# GeoIP — MaxMind GeoLite2 country/city lookup
+# geoip2==4.8.0
+
+# ElevenLabs — AI voice generation
+# elevenlabs==1.9.0
+# boto3==1.35.95        # AWS S3 / Cloudflare R2 for audio storage

@@ -34,6 +34,14 @@
 - Commit freely, push only when explicitly asked.
 - Every push may trigger a Vercel deploy (cost). Ask before pushing.
 
+## Optional layers
+
+Available layers (off by default — enable per project):
+Cloudinary, AI/OpenAI, Langfuse, Stripe, Redis, 2FA/TOTP, GeoIP/MaxMind, ElevenLabs+R2.
+
+See `docs/optional-layers.md` for packages, env vars, and code patterns for each.
+To activate: uncomment in `requirements.txt`, uncomment in `config.py`, set env vars.
+
 ## Adding a new feature
 
 1. Add model in `backend/app/models/` + import in `alembic/env.py`
