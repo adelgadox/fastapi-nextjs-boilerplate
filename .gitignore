@@ -36,3 +36,8 @@ Thumbs.db
 
 # Docker
 *.log
+
+# Local tooling (not for version control)
+superpowers/
+worktrees/
+scripts/
