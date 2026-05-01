@@ -38,6 +38,6 @@ Thumbs.db
 *.log
 
 # Local tooling (not for version control)
-superpowers/
-worktrees/
+.superpowers/
+.worktrees/
 scripts/
