@@ -20,6 +20,50 @@
 - `frontend_url` may be comma-separated (multi-origin CORS). When building URLs for emails,
   always use `settings.frontend_url.split(",")[0].strip()`.
 
+### Architecture layers
+
+```
+routers/    → thin HTTP handlers (validate input, call service, return response)
+services/   → business logic (extend BaseService, inject db via constructor)
+repositories/ → data access only (extend BaseRepository, no business logic)
+schemas/    → Pydantic I/O models (extend StrictModel or StrictORMModel from schemas/_base.py)
+```
+
+- Never write `db.query()` in a router — use a repository method.
+- Never write business logic in a router — delegate to a service.
+- Services are framework-agnostic: no `Request`, `Response`, or `Depends` inside service methods.
+
+### API versioning
+
+All routes are mounted under `/v1`. The constant `_V1 = "/v1"` is defined in `main.py`.
+
+```python
+app.include_router(my_router, prefix=_V1)
+```
+
+Webhook routes (Stripe, etc.) that are called by third parties with a hardcoded URL remain unversioned.
+
+### Error responses
+
+All errors use a structured envelope — never return a plain `detail` string:
+
+```python
+from app.utils.errors import api_error
+
+raise api_error("EMAIL_TAKEN", "Email already registered", field="email")
+# → HTTP 400 { "error": { "code": "EMAIL_TAKEN", "message": "...", "field": "email", "meta": null } }
+```
+
+### Pydantic v2 strict mode
+
+All schemas extend `StrictModel` (input) or `StrictORMModel` (ORM output) from `app/schemas/_base.py`.
+This prevents silent type coercions (e.g. `"1"` auto-converted to `1`).
+
+### Login lockout
+
+`User` has `login_attempts` + `lockout_until` fields. `AuthService.login()` enforces
+lockout after 10 consecutive failures for 15 minutes. Reset to 0 on successful login.
+
 ## Frontend conventions
 
 - All mutations go in `src/lib/actions.ts` with `"use server"`.
@@ -66,7 +110,10 @@ See `docs/security.md` for:
 
 1. Add model in `backend/app/models/` + import in `alembic/env.py`
 2. Run `alembic revision --autogenerate -m "description"` + `alembic upgrade head`
-3. Add router in `backend/app/routers/` + register in `main.py`
-4. Add server action in `frontend/src/lib/actions.ts`
-5. Add page/component in `frontend/src/app/`
-6. Update `ROADMAP.md` status
+3. Add repository in `backend/app/repositories/` extending `BaseRepository`
+4. Add service in `backend/app/services/` extending `BaseService`
+5. Add schemas in `backend/app/schemas/` extending `StrictModel` / `StrictORMModel`
+6. Add router in `backend/app/routers/` + register with `app.include_router(x.router, prefix=_V1)` in `main.py`
+7. Add server action in `frontend/src/lib/actions.ts`
+8. Add page/component in `frontend/src/app/`
+9. Update `ROADMAP.md` status

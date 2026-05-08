@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Boolean, Column, String, DateTime
+from sqlalchemy import Boolean, Column, Integer, String, DateTime
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from app.database import Base
@@ -30,6 +30,10 @@ class User(Base):
     # Password reset
     reset_password_token = Column(String, nullable=True)
     reset_password_token_expires_at = Column(DateTime, nullable=True)
+
+    # Login lockout — resets to 0 on successful login
+    login_attempts = Column(Integer, nullable=False, server_default="0")
+    lockout_until = Column(DateTime, nullable=True)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

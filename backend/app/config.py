@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # Set to "*" on Railway (all traffic passes through Railway's proxy)
     trusted_proxy_ips: str = "127.0.0.1"
 
+    # ── Security ──────────────────────────────────────────────────────────────
+    # Comma-separated IPs allowed to hit admin/internal routes (empty = open)
+    admin_allowed_ips: str = ""
+    # Set to true in production to require Cloudflare proxy (blocks direct origin hits)
+    cloudflare_only: bool = False
+
     # ── Sentry (optional — error tracking disabled when absent) ───────────────
     sentry_dsn: str = ""
     sentry_environment: str = "production"

@@ -17,7 +17,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         form.append("username", credentials.identifier as string)
         form.append("password", credentials.password as string)
 
-        const res = await fetch(`${API_URL}/auth/login`, {
+        const res = await fetch(`${API_URL}/v1/auth/login`, {
           method: "POST",
           body: form,
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -25,7 +25,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
         if (!res.ok) {
           const data = await res.json().catch(() => ({}))
-          throw new Error(data.detail ?? "Invalid credentials")
+          throw new Error(data.error?.code ?? data.error?.message ?? "Invalid credentials")
         }
 
         const data = await res.json()
