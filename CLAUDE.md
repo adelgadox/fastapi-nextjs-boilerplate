@@ -1,5 +1,29 @@
 # Claude Instructions — FastAPI + Next.js Boilerplate
 
+## REGLA #1 — Git: nunca push a main
+
+**NUNCA hagas `git push` directamente a `main`, sin importar la situación.**
+
+Todo cambio sigue este flujo sin excepción:
+
+1. Crear rama desde `main`:
+   ```
+   git checkout main && git pull
+   git checkout -b feat/mi-feature   # o fix/, refactor/, chore/, docs/
+   ```
+2. Hacer commits en la rama.
+3. Esperar que el usuario pida explícitamente el push: `"haz push"` / `"push"`.
+4. Solo entonces: `git push -u origin <rama>`.
+5. El PR también requiere aprobación explícita: `"crea el PR"` / `"abre el PR"`.
+
+**Por qué:** cada push puede disparar un deploy en Vercel (costo real). Un push a main sin PR salta el proceso de revisión.
+
+**Comandos bloqueados sin aprobación explícita:**
+- `git push` (en cualquier rama)
+- `git push origin main` (absolutamente prohibido)
+- `gh pr create`
+- Cualquier operación destructiva de git (`reset --hard`, `branch -D`, etc.)
+
 ## Stack
 
 - **Backend:** FastAPI + SQLAlchemy + Alembic + PostgreSQL
