@@ -8,10 +8,15 @@ import { apiFetch } from "@/lib/api"
 
 const API_URL = process.env.API_URL ?? "http://localhost:8000"
 
-function extractError(detail: unknown, fallback = "Something went wrong"): string {
+function extractError(body: Record<string, unknown>, fallback = "Something went wrong"): string {
+  // New error envelope: { error: { code, message, field } }
+  const env = body.error as Record<string, unknown> | undefined
+  if (env?.message && typeof env.message === "string") return env.message
+  // Legacy / passthrough
+  const detail = body.detail
   if (!detail) return fallback
   if (typeof detail === "string") return detail
-  if (Array.isArray(detail)) return detail[0]?.msg ?? fallback
+  if (Array.isArray(detail)) return (detail[0] as Record<string, unknown>)?.msg as string ?? fallback
   return fallback
 }
 
@@ -44,7 +49,7 @@ export async function registerAction(_: unknown, formData: FormData) {
     full_name: formData.get("full_name") || undefined,
   }
 
-  const res = await fetch(`${API_URL}/auth/register`, {
+  const res = await fetch(`${API_URL}/v1/auth/register`, {
     method: "POST",
     body: JSON.stringify(body),
     headers: { "Content-Type": "application/json" },
@@ -52,7 +57,7 @@ export async function registerAction(_: unknown, formData: FormData) {
 
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    return { error: extractError(data.detail, "Registration failed") }
+    return { error: extractError(data, "Registration failed") }
   }
 
   redirect(`/verify-email?email=${encodeURIComponent(body.email as string)}`)
@@ -61,7 +66,7 @@ export async function registerAction(_: unknown, formData: FormData) {
 export async function logoutAction() {
   const session = await auth()
   if (session?.accessToken) {
-    await fetch(`${API_URL}/auth/logout`, {
+    await fetch(`${API_URL}/v1/auth/logout`, {
       method: "POST",
       headers: { Authorization: `Bearer ${session.accessToken}` },
     }).catch(() => {})
