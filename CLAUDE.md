@@ -129,6 +129,34 @@ lockout after 10 consecutive failures for 15 minutes. Reset to 0 on successful l
 - `gh pr create` requires explicit user approval (visible to others).
 - After completing work, say: "Commiteado en `branch-name`. ¿Hacemos push y PR?"
 
+**REGLA — Nunca más de 1 PR abierto a la vez:**
+- Antes de crear cualquier PR, valida primero en GitHub que no haya otro PR abierto:
+  ```
+  gh pr list --state open
+  ```
+- Si ya existe un PR abierto: **NO crees otro.** Avísale al usuario que ya hay un PR
+  abierto y haz tu trabajo (commits) sobre esa misma rama/PR existente (`git checkout <rama-del-PR>`
+  o haz pull a ese PR) en lugar de abrir uno nuevo.
+- Nunca abras un segundo PR. Solo se crea uno nuevo cuando el anterior fue mergeado o cerrado.
+- **Antes de actualizar/pushear a un PR existente, valida que siga abierto:**
+  ```
+  gh pr view <num> --json state -q .state    # debe ser OPEN
+  ```
+  Si ya fue mergeado o cerrado (`MERGED`/`CLOSED`), **no le hagas push** — crea una rama
+  nueva desde `main` actualizado (`git checkout main && git pull`) y abre un PR nuevo.
+
+**REGLA — Unificar los PRs de Dependabot:**
+- Dependabot genera PRs automáticamente en GitHub (actualizaciones de dependencias).
+  Revísalos siempre antes de crear un PR:
+  ```
+  gh pr list --state open --author "app/dependabot"
+  ```
+- Si vas a crear un PR y existen PRs de Dependabot abiertos, **mézclalos dentro de tu PR**
+  (mergea esas ramas/cambios en tu rama) y genera **un solo PR unificado**. No dejes PRs de
+  Dependabot sueltos en paralelo.
+- Motivo: evita conflictos de código y garantiza que tanto las bumps de Dependabot como
+  nuestro código quedan consistentes y validados en un único pipeline de CI.
+
 ## Optional layers
 
 Available layers (off by default — enable per project):
