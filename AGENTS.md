@@ -1,4 +1,4 @@
-# Claude Instructions — FastAPI + Next.js Boilerplate
+# Codex Instructions — FastAPI + Next.js Boilerplate
 
 ## REGLA #1 — Git: nunca push a main
 
