@@ -138,6 +138,12 @@ lockout after 10 consecutive failures for 15 minutes. Reset to 0 on successful l
   abierto y haz tu trabajo (commits) sobre esa misma rama/PR existente (`git checkout <rama-del-PR>`
   o haz pull a ese PR) en lugar de abrir uno nuevo.
 - Nunca abras un segundo PR. Solo se crea uno nuevo cuando el anterior fue mergeado o cerrado.
+- **Antes de actualizar/pushear a un PR existente, valida que siga abierto:**
+  ```
+  gh pr view <num> --json state -q .state    # debe ser OPEN
+  ```
+  Si ya fue mergeado o cerrado (`MERGED`/`CLOSED`), **no le hagas push** — crea una rama
+  nueva desde `main` actualizado (`git checkout main && git pull`) y abre un PR nuevo.
 
 **REGLA — Unificar los PRs de Dependabot:**
 - Dependabot genera PRs automáticamente en GitHub (actualizaciones de dependencias).
