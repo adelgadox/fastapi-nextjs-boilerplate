@@ -10,11 +10,14 @@
 | Frontend | Next.js 15 + Tailwind CSS |
 | Auth | NextAuth v5 (JWT) + bcrypt |
 | Database | PostgreSQL |
+| Background jobs | ARQ (Redis) — durable queue with in-process fallback |
+| Cache | Redis (graceful degradation when absent) |
 | Email | Resend + Jinja2 templates |
 | Storage | Cloudinary (images) |
 | Error tracking | Sentry (backend + frontend) |
-| Alerts | Slack Bot (`chat.postMessage`) |
-| Hosting | Railway (backend + DB) · Vercel (frontend) |
+| Alerts | Slack Bot (`chat.postMessage`) + infra-status enrichment |
+| CI | Dependabot + npm/pip CVE audits (GitHub Actions) |
+| Hosting | Railway (backend + DB + Redis) · Vercel (frontend) |
 
 ## Project Structure
 
@@ -27,14 +30,16 @@
 │   │   ├── repositories/     # Data access only — no business logic, named query methods
 │   │   ├── models/           # SQLAlchemy ORM models
 │   │   ├── schemas/          # Pydantic I/O schemas (strict mode via StrictModel base)
-│   │   ├── utils/            # Shared utilities (rate_limit, slack, cloudflare, errors)
+│   │   ├── utils/            # Shared utilities — see "Backend utilities" below
 │   │   ├── templates/
 │   │   │   └── emails/       # Jinja2 HTML email templates
 │   │   ├── config.py         # Pydantic settings — reads from .env
-│   │   ├── database.py       # SQLAlchemy engine + session + Base
+│   │   ├── database.py       # SQLAlchemy engine + session + Base (TCP keepalives)
 │   │   ├── dependencies.py   # Auth dependencies (get_current_user, etc.)
 │   │   ├── email.py          # Resend send functions
-│   │   └── main.py           # App factory, middleware, versioned routers
+│   │   ├── arq_pool.py       # Durable background-job queue (Redis) + in-process fallback
+│   │   ├── worker.py         # ARQ worker: task definitions, crons, fallbacks
+│   │   └── main.py           # App factory, lifespan, middleware, versioned routers
 │   ├── alembic/              # Database migrations
 │   │   └── versions/
 │   ├── Dockerfile
@@ -47,7 +52,11 @@
 │       │   ├── actions.ts    # Server actions ("use server")
 │       │   └── api.ts        # apiFetch typed helper
 │       └── types/            # Shared TypeScript interfaces
-├── docker-compose.yml        # Local dev: backend + frontend + PostgreSQL
+├── .github/
+│   ├── dependabot.yml        # Grouped weekly dep updates (npm + pip + actions)
+│   └── workflows/
+│       └── security-scan.yml # npm audit + pip-audit on every push/PR
+├── docker-compose.yml        # Local dev: db + redis + backend + worker + frontend
 ├── .env.example              # All env vars documented
 └── ROADMAP.md                # Project roadmap template
 ```
@@ -103,11 +112,15 @@ See `.env.example` for all variables with descriptions.
 | Variable | Description |
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL connection string |
+| `DATABASE_URL_DIRECT` | Direct (non-PgBouncer) URL for Alembic migrations (optional) |
 | `SECRET_KEY` | JWT signing secret (`openssl rand -hex 32`, min 32 bytes enforced) |
+| `ENCRYPTION_KEY` | Fernet key for `app.utils.crypto` (optional, falls back to `SECRET_KEY`) |
+| `REDIS_URL` | Redis for ARQ jobs + cache (optional, degrades gracefully) |
 | `FRONTEND_URL` | Frontend URL(s) for CORS — comma-separated |
 | `INTERNAL_API_SECRET` | Shared secret for server-to-server endpoints |
 | `ADMIN_ALLOWED_IPS` | Comma-separated IPs for admin routes (empty = open) |
 | `CLOUDFLARE_ONLY` | `true` to block requests not proxied through Cloudflare |
+| `GOOGLE_SAFE_BROWSING_API_KEY` | URL reputation checks in `url_security` (optional) |
 | `RESEND_API_KEY` | Resend API key for transactional email (optional) |
 | `SENTRY_DSN` | Sentry DSN — backend error tracking (optional) |
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth token `xoxb-...` (optional) |
@@ -164,16 +177,66 @@ alembic downgrade -1
 - `AdminIPAllowlistMiddleware` — restrict admin routes by IP
 - `CloudflareOnlyMiddleware` — block direct origin hits in production
 - `SECRET_KEY` minimum 32 bytes enforced at startup
+- **SSRF protection** for user URLs (`utils/url_security.py`) + optional Google Safe Browsing
+- **Input sanitization** helpers for schema validators (`utils/sanitize.py`)
+- **Fernet encryption** for sensitive DB-stored values (`utils/crypto.py`)
+- **Dependency CVE scanning** in CI (`npm audit` + `pip-audit`) + grouped Dependabot updates
+
+**Background jobs & cache**
+- ARQ durable task queue (`arq_pool.py` + `worker.py`) — jobs persist in Redis and
+  survive restarts, retry on failure, and run in a separate `worker` container
+- **Graceful degradation**: with no `REDIS_URL`, queued tasks fall back to in-process
+  FastAPI `BackgroundTasks` and the cache becomes a no-op — zero Redis dependency in dev
+- Generic Redis cache helper (`utils/cache.py`) with the same degrade-to-source pattern
 
 **Infrastructure**
 - All routes versioned under `/v1` — see [API Versioning](#api-versioning) below
 - Sentry error tracking wired on backend and frontend
-- Slack Bot alert on unhandled 500 errors (`#backend-alerts`)
+- Slack Bot alert on unhandled 500 errors, **auto-enriched with Railway/Vercel status**
+  (`utils/infra_status.py`) so you instantly know if it's an upstream outage
 - GZip compression
 - CORS configured for multi-origin (comma-separated `FRONTEND_URL`)
-- PgBouncer-compatible connection pooling mode
-- Alembic migrations with autogenerate
-- Docker Compose for full local stack
+- PgBouncer-compatible connection pooling + TCP keepalives (no dropped idle connections)
+- Alembic migrations with autogenerate (uses `DATABASE_URL_DIRECT` to bypass PgBouncer)
+- Docker Compose for full local stack (db + redis + backend + worker + frontend)
+
+### Backend utilities (`app/utils/`)
+
+| File | Purpose |
+|------|---------|
+| `errors.py` | `api_error()` — structured error envelope helper |
+| `rate_limit.py` | slowapi limiter instance |
+| `cloudflare.py` | `get_client_ip()` — real client IP behind Cloudflare/proxy |
+| `slack.py` | `notify_slack()` — fire-and-forget bot alerts |
+| `sanitize.py` | `strip_html`, `validate_username/slug/url_scheme` for schema validators |
+| `url_security.py` | `validate_url()` (SSRF) + `check_safe_browsing()` for user URLs |
+| `crypto.py` | `encrypt_value` / `decrypt_value` (Fernet) for sensitive columns |
+| `cache.py` | `get/set/delete/incr` Redis cache, no-op when Redis is absent |
+| `infra_status.py` | Railway/Vercel status for Slack alert enrichment |
+
+### Background jobs
+
+Enqueue a durable task from any service — it runs in the `worker` process when
+Redis is available, or in-process otherwise:
+
+```python
+from app.arq_pool import enqueue
+
+# In a router/service that already has BackgroundTasks injected:
+enqueue(background_tasks, "send_verification_email_task", user.email, token)
+```
+
+Define the task and its in-process fallback in `app/worker.py`, then run the worker:
+
+```bash
+docker compose up worker          # already wired in docker-compose.yml
+# or standalone:
+cd backend && arq app.worker.WorkerSettings
+```
+
+> **Origin:** the background-jobs queue, cache, security utilities, infra-status
+> enrichment, TCP keepalives, and CI workflows were ported from the production
+> **bioflow** app and generalized for reuse here.
 
 ## API Versioning
 

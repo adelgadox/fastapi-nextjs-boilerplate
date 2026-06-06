@@ -1,5 +1,6 @@
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -111,9 +112,22 @@ if settings.debug:
         "Set DEBUG=false in production."
     )
 
+# ── Lifespan ─────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from app import arq_pool
+
+    await arq_pool.startup()
+    try:
+        yield
+    finally:
+        await arq_pool.shutdown()
+
+
 # ── App ────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title=settings.app_name, debug=settings.debug)
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
 app.state.limiter = limiter
 
 
@@ -157,10 +171,27 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONRe
     )
 
 
+async def _alert_500(path: str, exc: Exception) -> None:
+    """Send a Slack 500 alert enriched with Railway/Vercel infra status."""
+    from app.utils.slack import notify_slack
+    from app.utils.infra_status import get_infra_status, build_slack_context
+
+    context = ""
+    try:
+        context = build_slack_context(await get_infra_status())
+    except Exception:
+        pass  # Never let alert enrichment swallow the original error path
+
+    await notify_slack(
+        f":rotating_light: *Backend 500* — `{path}`\n"
+        f"```{type(exc).__name__}: {exc}```" + context,
+        channel="#backend-alerts",
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     import asyncio
-    from app.utils.slack import notify_slack
 
     path = f"{request.method} {request.url.path}"
     logger.error("Unhandled exception on %s", path, exc_info=exc)
@@ -168,13 +199,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     if settings.sentry_dsn:
         sentry_sdk.capture_exception(exc)
 
-    asyncio.create_task(
-        notify_slack(
-            f":rotating_light: *Backend 500* — `{path}`\n"
-            f"```{type(exc).__name__}: {exc}```",
-            channel="#backend-alerts",
-        )
-    )
+    asyncio.create_task(_alert_500(path, exc))
 
     return JSONResponse(
         status_code=500,

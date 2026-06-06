@@ -7,12 +7,24 @@ class Settings(BaseSettings):
 
     # ── Database ──────────────────────────────────────────────────────────────
     database_url: str
+    # Direct connection to Postgres, bypassing any PgBouncer proxy. Used by Alembic
+    # migrations (PgBouncer transaction mode is incompatible with DDL). Falls back
+    # to database_url when empty. On Railway, set this to the Postgres *public* URL.
+    database_url_direct: str = ""
+    # Set True when a PgBouncer proxy sits in front of PostgreSQL: switches
+    # SQLAlchemy to NullPool and disables prepared statements.
     pgbouncer_mode: bool = False
 
     # ── JWT ───────────────────────────────────────────────────────────────────
     secret_key: str
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24  # 24 hours
+
+    # ── Encryption ────────────────────────────────────────────────────────────
+    # Fernet key for app.utils.crypto (encrypting sensitive DB values such as
+    # third-party API keys). Falls back to secret_key when empty; prefer a
+    # dedicated key in production. Generate: python -c "import secrets; print(secrets.token_hex(32))"
+    encryption_key: str = ""
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated list of allowed origins (multi-origin CORS support)
@@ -38,6 +50,15 @@ class Settings(BaseSettings):
     admin_allowed_ips: str = ""
     # Set to true in production to require Cloudflare proxy (blocks direct origin hits)
     cloudflare_only: bool = False
+    # Google Safe Browsing API key — enables URL reputation checks in
+    # app.utils.url_security.check_safe_browsing (optional; fails open when empty)
+    google_safe_browsing_api_key: str = ""
+
+    # ── Redis (background jobs + cache) ─────────────────────────────────────────
+    # Powers app.utils.cache and the ARQ durable task queue. Everything degrades
+    # gracefully when empty (no-op cache, in-process BackgroundTasks fallback).
+    # Railway injects REDIS_URL automatically when the Redis addon is added.
+    redis_url: str = ""
 
     # ── Sentry (optional — error tracking disabled when absent) ───────────────
     sentry_dsn: str = ""
@@ -81,10 +102,6 @@ class Settings(BaseSettings):
     # stripe_secret_key: str = ""
     # stripe_webhook_secret: str = ""
     # stripe_price_id_pro: str = ""   # add one per plan
-
-    # ── Redis (optional — caching, queues) ────────────────────────────────────
-    # pip install redis==5.2.1
-    # redis_url: str = "redis://localhost:6379/0"
 
     # ── 2FA / TOTP (optional — authenticator apps) ────────────────────────────
     # pip install pyotp==2.9.0 qrcode[pil]==8.0

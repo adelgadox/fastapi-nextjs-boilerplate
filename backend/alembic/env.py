@@ -13,7 +13,9 @@ import app.models.user          # noqa: F401
 import app.models.token_denylist  # noqa: F401
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Use the direct (non-PgBouncer) URL for migrations when available — PgBouncer
+# transaction-pooling mode is incompatible with DDL. Falls back to database_url.
+config.set_main_option("sqlalchemy.url", settings.database_url_direct or settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
