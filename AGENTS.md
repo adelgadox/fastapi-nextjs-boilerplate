@@ -28,7 +28,9 @@ Todo cambio sigue este flujo sin excepción:
 
 - **Backend:** FastAPI + SQLAlchemy + Alembic + PostgreSQL
 - **Frontend:** Next.js 15 (App Router) + Tailwind CSS + NextAuth v5
-- **Auth:** JWT (PyJWT) + bcrypt, token denylist for logout revocation
+- **Auth:** JWT (PyJWT) + bcrypt, token denylist for logout revocation.
+  Short-lived access token (30 min) + long-lived **refresh token** (opaque, SHA-256-hashed,
+  rotated + reuse-detected) via `POST /v1/auth/refresh`. See `services/refresh_token_service.py`.
 - **Email:** Resend + Jinja2 templates in `backend/app/templates/emails/`
 - **Alerts:** Slack Bot via `chat.postMessage` (`utils/slack.py`)
 - **Error tracking:** Sentry (backend + frontend)
@@ -102,6 +104,30 @@ This prevents silent type coercions (e.g. `"1"` auto-converted to `1`).
 
 `User` has `login_attempts` + `lockout_until` fields. `AuthService.login()` enforces
 lockout after 10 consecutive failures for 15 minutes. Reset to 0 on successful login.
+
+### Refresh tokens
+
+`POST /v1/auth/refresh` rotates an opaque refresh token: only its SHA-256 hash is
+stored (`refresh_tokens` table), rotation revokes the old row and mints a successor
+in the same `family_id`, and replaying an already-rotated token revokes the whole
+family (theft response → `TOKEN_REUSED`). `login` / `oauth` issue one; `logout`
+(optional `refresh_token` in body) and password reset revoke them. Optional
+`X-Device-Id` header tags the token for future device-session management.
+
+### Backend testing
+
+Tests run against a **real PostgreSQL** (never SQLite — models use the postgresql
+UUID type). Each test runs in a transaction rolled back at teardown.
+
+```bash
+docker-compose up -d db                     # Postgres on :5432
+docker exec <db-container> psql -U app -c "CREATE DATABASE app_test;"   # once
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/                      # or: python -m pytest tests/ -k refresh
+```
+
+Harness in `tests/conftest.py` (`db` + `client` fixtures). Point `TEST_DATABASE_URL`
+at a different Postgres if needed.
 
 ## Frontend conventions
 

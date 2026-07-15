@@ -163,7 +163,9 @@ alembic downgrade -1
 ## What's included
 
 **Auth**
-- JWT auth with token denylist (logout revocation)
+- JWT access tokens (30 min) + rotating **refresh tokens** with reuse detection
+  (`POST /v1/auth/refresh`) — opaque, SHA-256-hashed, family-revoked on theft. Built for mobile clients.
+- Token denylist for logout revocation
 - Email + password register with email verification flow
 - Password reset flow
 - Login lockout after 10 failed attempts (15 min, auto-resets on success)

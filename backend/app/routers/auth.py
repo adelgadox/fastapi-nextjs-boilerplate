@@ -1,11 +1,21 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Header, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_internal_token
-from app.schemas.auth import ForgotPasswordRequest, OAuthLogin, ResendRequest, ResetPasswordRequest, Token, UserCreate
+from app.schemas.auth import (
+    ForgotPasswordRequest,
+    OAuthLogin,
+    RefreshRequest,
+    ResendRequest,
+    ResetPasswordRequest,
+    Token,
+    UserCreate,
+)
 from app.services.auth_service import AuthService
+from app.services.refresh_token_service import RefreshError
+from app.utils.errors import api_error
 from app.utils.rate_limit import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -29,9 +39,33 @@ async def register(
 def login(
     request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
+    x_device_id: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    return AuthService(db).login(form.username.strip(), form.password)
+    return AuthService(db).login(form.username.strip(), form.password, device_id=x_device_id)
+
+
+_REFRESH_ERROR = {
+    "invalid": (401, "INVALID_REFRESH_TOKEN", "Invalid session. Please sign in again."),
+    "token_reused": (401, "TOKEN_REUSED", "Session revoked for security. Please sign in again."),
+    "expired": (401, "REFRESH_EXPIRED", "Session expired. Please sign in again."),
+}
+
+
+@router.post("/refresh", response_model=Token)
+@limiter.limit("30/minute")
+def refresh(
+    request: Request,
+    data: RefreshRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return AuthService(db).refresh(data.refresh_token, device_id=data.device_id)
+    except RefreshError as exc:
+        # Persist any family revocation triggered by reuse-detection before erroring.
+        db.commit()
+        status_code, code, message = _REFRESH_ERROR[exc.code]
+        raise api_error(code, message, status_code=status_code)
 
 
 @router.post("/oauth", response_model=Token, dependencies=[Depends(require_internal_token)])
@@ -52,9 +86,10 @@ def oauth_login(
 def logout(
     request: Request,
     token: str = Depends(_oauth2_scheme),
+    refresh_token: str | None = Body(default=None, embed=True),
     db: Session = Depends(get_db),
 ) -> None:
-    AuthService(db).logout(token)
+    AuthService(db).logout(token, refresh_token)
 
 
 @router.get("/verify-email")

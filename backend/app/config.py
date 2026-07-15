@@ -18,7 +18,10 @@ class Settings(BaseSettings):
     # ── JWT ───────────────────────────────────────────────────────────────────
     secret_key: str
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24  # 24 hours
+    # Short-lived access token now that refresh tokens exist (rotation on /auth/refresh).
+    access_token_expire_minutes: int = 30
+    # Long-lived refresh token (opaque, rotated, reuse-detected). 30–90 days is typical.
+    refresh_token_expire_days: int = 60
 
     # ── Encryption ────────────────────────────────────────────────────────────
     # Fernet key for app.utils.crypto (encrypting sensitive DB values such as

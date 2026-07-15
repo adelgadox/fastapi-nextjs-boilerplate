@@ -8,8 +8,8 @@ debt: a bug in the boilerplate is a bug in every child project.
 
 | # | Task | Description | Source | Complexity | Status |
 |---|------|-------------|--------|------------|--------|
-| 08.1 | pytest harness vs real Postgres | Run tests against a real Postgres service container (never SQLite), each test in a rolled-back transaction; `scripts/test.py` resets a throwaway DB. | pet-portal `scripts/test.py`, `conftest.py` | 🟡 | ⬜ Pending |
-| 08.2 | Unit tests for auth/services | Mock-based service/repository tests (the repo layer makes services trivially mockable). Target the auth vertical first. | both `tests/unit/` | 🟡 | ⬜ Pending |
+| 08.1 | pytest harness vs real Postgres | Run tests against a real Postgres (never SQLite — models use the postgresql UUID type), each test in a rolled-back transaction (savepoint-joined session survives service `commit()`s). Shipped in `tests/conftest.py`; dev deps in `requirements-dev.txt`. | pet-portal `conftest.py` | 🟡 | ✅ Done |
+| 08.2 | Unit + integration tests for auth | Service- and endpoint-level tests. Done for the refresh-token vertical (`tests/test_refresh_tokens.py`, 10 tests); extend to register/login/verify/reset. | both `tests/` | 🟡 | 🟡 Partial |
 | 08.3 | Integration tests for routes | Real route + SQL tests through the ASGI app with `FakeStorage` override. | pet-portal `tests/`, bioflow Phase 46 · F | 🔴 | ⬜ Pending |
 | 08.4 | CI: migration drift guard | Fresh `alembic upgrade head` (fatal on failure) + `alembic check` asserting model↔migration parity and **exactly one head**. | both CI | 🟢 | ⬜ Pending |
 | 08.5 | CI: ruff + mypy gate | Wire ruff (lint) + mypy (types) into the pipeline. | both Phase 46 · E1 (⬜) / pet-portal | 🟢 | ⬜ Pending |

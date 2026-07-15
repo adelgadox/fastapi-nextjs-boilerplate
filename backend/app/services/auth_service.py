@@ -16,6 +16,7 @@ from app.repositories.token_denylist_repository import TokenDenylistRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import OAuthLogin, UserCreate
 from app.services.base import BaseService
+from app.services.refresh_token_service import RefreshTokenService
 from app.utils.errors import api_error
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ class AuthService(BaseService):
 
     # ── Login / logout ─────────────────────────────────────────────────────────
 
-    def login(self, identifier: str, password: str) -> dict:
+    def login(self, identifier: str, password: str, device_id: str | None = None) -> dict:
         user = UserRepository(self.db).find_active_by_identifier(identifier)
 
         if not user or not user.hashed_password:
@@ -117,9 +118,25 @@ class AuthService(BaseService):
         if not user.is_verified:
             raise api_error("EMAIL_NOT_VERIFIED", "Email address not verified", status_code=403)
 
-        return {"access_token": self.create_access_token(str(user.id)), "token_type": "bearer"}
+        refresh = RefreshTokenService(self.db).issue(user, device_id=device_id)
+        self.db.commit()
+        return {
+            "access_token": self.create_access_token(str(user.id)),
+            "refresh_token": refresh,
+            "token_type": "bearer",
+        }
 
-    def logout(self, token: str) -> None:
+    def refresh(self, refresh_token: str, device_id: str | None = None) -> dict:
+        """Rotate a refresh token and mint a fresh access token."""
+        user, new_refresh = RefreshTokenService(self.db).rotate(refresh_token, device_id=device_id)
+        self.db.commit()
+        return {
+            "access_token": self.create_access_token(str(user.id)),
+            "refresh_token": new_refresh,
+            "token_type": "bearer",
+        }
+
+    def logout(self, token: str, refresh_token: str | None = None) -> None:
         try:
             payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
             jti: str | None = payload.get("jti")
@@ -131,6 +148,10 @@ class AuthService(BaseService):
                     repo.save(TokenDenylist(jti=jti, expires_at=expires_at))
         except jwt.PyJWTError:
             pass
+        # Revoke the refresh-token family too, so a stolen refresh token dies on logout.
+        if refresh_token:
+            RefreshTokenService(self.db).revoke_by_plaintext(refresh_token)
+            self.db.commit()
 
     # ── Email verification ─────────────────────────────────────────────────────
 
@@ -183,7 +204,13 @@ class AuthService(BaseService):
                 registered_provider=data.provider,
             ))
 
-        return {"access_token": self.create_access_token(str(user.id)), "token_type": "bearer"}
+        refresh = RefreshTokenService(self.db).issue(user)
+        self.db.commit()
+        return {
+            "access_token": self.create_access_token(str(user.id)),
+            "refresh_token": refresh,
+            "token_type": "bearer",
+        }
 
     # ── Password reset ─────────────────────────────────────────────────────────
 
@@ -216,6 +243,8 @@ class AuthService(BaseService):
         user.hashed_password = self.hash_password(new_password)
         user.reset_password_token = None
         user.reset_password_token_expires_at = None
+        # Revoke every active refresh token — a password reset kills all sessions.
+        RefreshTokenService(self.db).revoke_all_for_user(user)
         repo.commit()
         # Optional: a "password changed" confirmation email — see roadmap phase-01.
         return {"message": "Password updated successfully."}

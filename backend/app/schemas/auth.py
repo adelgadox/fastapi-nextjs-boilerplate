@@ -10,7 +10,13 @@ class UserCreate(StrictModel):
 
 class Token(StrictModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
+
+
+class RefreshRequest(StrictModel):
+    refresh_token: str
+    device_id: str | None = None
 
 
 class ResendRequest(StrictModel):
