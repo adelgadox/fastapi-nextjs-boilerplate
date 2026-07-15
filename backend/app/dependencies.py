@@ -1,4 +1,6 @@
-from fastapi import Depends, HTTPException, status
+import secrets
+
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 import jwt
@@ -10,6 +12,25 @@ from app.repositories.token_denylist_repository import TokenDenylistRepository
 from app.repositories.user_repository import UserRepository
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/v1/auth/login")
+
+
+def require_internal_token(x_internal_token: str | None = Header(default=None)) -> None:
+    """Guard server-to-server endpoints with the shared internal secret.
+
+    Fail-closed: when ``internal_api_secret`` is unset the endpoint is blocked
+    entirely, because these routes can mint access tokens or bypass verification.
+    The Next.js server (which has verified the upstream OAuth provider) must send
+    the ``X-Internal-Token`` header. Constant-time compare avoids timing leaks.
+    """
+    expected = settings.internal_api_secret
+    forbidden = HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={"code": "FORBIDDEN", "message": "Internal access required", "field": None, "meta": None},
+    )
+    if not expected or not x_internal_token:
+        raise forbidden
+    if not secrets.compare_digest(x_internal_token, expected):
+        raise forbidden
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)) -> User:
