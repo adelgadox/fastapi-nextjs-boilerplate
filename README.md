@@ -7,13 +7,13 @@
 | Layer | Technology |
 |-------|-----------|
 | Backend | FastAPI + SQLAlchemy + Alembic |
-| Frontend | Next.js 15 + Tailwind CSS |
+| Frontend | Next.js 16 (App Router) + React 19 + Tailwind CSS |
 | Auth | NextAuth v5 (JWT) + bcrypt |
 | Database | PostgreSQL |
 | Background jobs | ARQ (Redis) — durable queue with in-process fallback |
 | Cache | Redis (graceful degradation when absent) |
 | Email | Resend + Jinja2 templates |
-| Storage | Cloudinary (images) |
+| Storage | Cloudinary (images) · Cloudflare R2 for private docs — decided, not yet wired (see [`docs/decisions/storage.md`](docs/decisions/storage.md)) |
 | Error tracking | Sentry (backend + frontend) |
 | Alerts | Slack Bot (`chat.postMessage`) + infra-status enrichment |
 | CI | Dependabot + npm/pip CVE audits (GitHub Actions) |
@@ -41,7 +41,7 @@
 │   │   ├── worker.py         # ARQ worker: task definitions, crons, fallbacks
 │   │   └── main.py           # App factory, lifespan, middleware, versioned routers
 │   ├── alembic/              # Database migrations
-│   │   └── versions/
+│   │   └── versions/         # 000_initial_schema (users + token_denylist) → 001 …
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/
@@ -56,9 +56,14 @@
 │   ├── dependabot.yml        # Grouped weekly dep updates (npm + pip + actions)
 │   └── workflows/
 │       └── security-scan.yml # npm audit + pip-audit on every push/PR
+├── docs/
+│   ├── roadmap/              # Boilerplate hardening roadmap (9 phases, Source per task)
+│   ├── decisions/            # Architecture decision records (e.g. storage.md)
+│   ├── security.md           # What's active by default + pre-launch checklist
+│   └── optional-layers.md    # Setup recipes for off-by-default layers
 ├── docker-compose.yml        # Local dev: db + redis + backend + worker + frontend
 ├── .env.example              # All env vars documented
-└── ROADMAP.md                # Project roadmap template
+└── ROADMAP.md                # Per-project product roadmap template
 ```
 
 ## Getting Started
@@ -162,7 +167,9 @@ alembic downgrade -1
 - Email + password register with email verification flow
 - Password reset flow
 - Login lockout after 10 failed attempts (15 min, auto-resets on success)
-- OAuth login (Google — wire up in `auth.ts`)
+- OAuth login (Google — wire up in `auth.ts`); the `/v1/auth/oauth` endpoint is
+  **server-to-server only**, guarded by a fail-closed `X-Internal-Token` check
+  (`require_internal_token`) so it can't be used to mint tokens from a browser
 - Role-based access control (`user` / `admin` / `superadmin`)
 
 **Architecture**
@@ -237,6 +244,18 @@ cd backend && arq app.worker.WorkerSettings
 > **Origin:** the background-jobs queue, cache, security utilities, infra-status
 > enrichment, TCP keepalives, and CI workflows were ported from the production
 > **bioflow** app and generalized for reuse here.
+
+## Roadmap
+
+Two roadmaps, two purposes:
+
+- **[`docs/roadmap/`](docs/roadmap/README.md)** — the *boilerplate hardening* roadmap:
+  9 phases (auth & mobile tokens, media storage, security hardening, observability,
+  scalability/async, API contract & Flutter readiness, data lifecycle & GDPR, testing/CI)
+  backported from two production apps on this stack (**bioflow**, **pet-portal**). Every
+  task has a **Source** column pointing at the exact file/phase to port from. Start here
+  before exposing endpoints to a mobile client.
+- **[`ROADMAP.md`](ROADMAP.md)** — a *product* roadmap template to fill per project.
 
 ## API Versioning
 
