@@ -41,13 +41,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
-        // @ts-expect-error — custom field
         token.accessToken = user.accessToken
       }
       return token
     },
     async session({ session, token }) {
-      // @ts-expect-error — custom field
       session.accessToken = token.accessToken
       return session
     },
