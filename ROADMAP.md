@@ -1,5 +1,12 @@
 # Roadmap — [Project Name]
 
+> **Two roadmaps, two purposes:**
+> - **This file** is your *product* roadmap template — fill it with your project's features.
+> - **[`docs/roadmap/`](docs/roadmap/README.md)** is the *boilerplate hardening* roadmap:
+>   security, storage, observability, and API-first/Flutter-readiness tasks backported
+>   from the production projects (bioflow, pet-portal). Pull those phases in as your
+>   project matures. Start there before exposing endpoints to a mobile client.
+
 ## Complexity legend
 
 | Icon | Meaning |

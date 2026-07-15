@@ -3,6 +3,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_internal_token
 from app.schemas.auth import ForgotPasswordRequest, OAuthLogin, ResendRequest, ResetPasswordRequest, Token, UserCreate
 from app.services.auth_service import AuthService
 from app.utils.rate_limit import limiter
@@ -33,13 +34,16 @@ def login(
     return AuthService(db).login(form.username.strip(), form.password)
 
 
-@router.post("/oauth", response_model=Token)
+@router.post("/oauth", response_model=Token, dependencies=[Depends(require_internal_token)])
 @limiter.limit("10/5minutes")
 def oauth_login(
     request: Request,
     data: OAuthLogin,
     db: Session = Depends(get_db),
 ):
+    """Server-to-server only. The Next.js server verifies the OAuth provider,
+    then calls this with the shared ``X-Internal-Token`` header. Never expose
+    this endpoint to browsers/mobile clients directly — it mints access tokens."""
     return AuthService(db).oauth_login(data)
 
 

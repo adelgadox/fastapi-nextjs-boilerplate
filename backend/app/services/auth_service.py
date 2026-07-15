@@ -8,6 +8,7 @@ import jwt
 from fastapi import BackgroundTasks, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.arq_pool import enqueue
 from app.config import settings
 from app.models.token_denylist import TokenDenylist
 from app.models.user import User
@@ -72,7 +73,7 @@ class AuthService(BaseService):
         if auto_verify:
             return {"message": "Registration successful.", "access_token": self.create_access_token(str(user.id))}
 
-        # TODO: enqueue send_verification_email_task
+        enqueue(background_tasks, "send_verification_email_task", user.email, token)
         return {"message": "Registration successful. Check your email to verify your account."}
 
     # ── Login / logout ─────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ class AuthService(BaseService):
             token = secrets.token_urlsafe(32)
             user.verification_token = token
             repo.commit()
-            # TODO: enqueue send_verification_email_task
+            enqueue(background_tasks, "send_verification_email_task", user.email, token)
         return {"message": "If that email is registered and unverified, a new link is on its way."}
 
     # ── OAuth ──────────────────────────────────────────────────────────────────
@@ -196,7 +197,7 @@ class AuthService(BaseService):
                 datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
             )
             repo.commit()
-            # TODO: enqueue send_password_reset_email_task
+            enqueue(background_tasks, "send_password_reset_email_task", user.email, token)
         return {"message": "If that email is registered, a reset link is on its way."}
 
     def reset_password(self, token: str, new_password: str, background_tasks: BackgroundTasks) -> dict:
@@ -216,5 +217,5 @@ class AuthService(BaseService):
         user.reset_password_token = None
         user.reset_password_token_expires_at = None
         repo.commit()
-        # TODO: enqueue send_password_changed_email_task
+        # Optional: a "password changed" confirmation email — see roadmap phase-01.
         return {"message": "Password updated successfully."}
