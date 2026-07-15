@@ -12,10 +12,10 @@ from, so implementing a phase is a lookup, not a redesign.
 
 ```mermaid
 pie showData
-  title Roadmap tasks (78 total)
+  title Roadmap tasks (94 total)
   "Done" : 4
   "Partial" : 7
-  "Pending" : 67
+  "Pending" : 83
 ```
 
 | Phase | Focus | Done | Partial | Pending | Total | % |
@@ -29,7 +29,8 @@ pie showData
 | [06 — API Contract & Flutter](phase-06-api-contract-flutter.md) | Envelope, OpenAPI, versioning | 0 | 1 | 11 | 12 | 0% |
 | [07 — Data Lifecycle & GDPR](phase-07-data-lifecycle-gdpr.md) | Soft-delete, erasure, cascade | 0 | 0 | 6 | 6 | 0% |
 | [08 — Testing & CI](phase-08-testing-ci.md) | pytest, drift guard, coverage | 0 | 0 | 8 | 8 | 0% |
-| **Total** | | **4** | **7** | **67** | **78** | **5%** |
+| [09 — Payments (Stripe)](phase-09-payments-stripe.md) | Webhook idempotency, checkout, plan state | 0 | 0 | 16 | 16 | 0% |
+| **Total** | | **4** | **7** | **83** | **94** | **4%** |
 
 ## Suggested order
 
