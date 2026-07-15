@@ -135,6 +135,14 @@ client = AsyncOpenAI(api_key=settings.ai_api_key, base_url=settings.ai_base_url)
 
 **When to use:** paid plans, one-time purchases, usage-based billing.
 
+> ⚠️ **The snippet below is a starting sketch, not production-ready.** The webhook
+> handler has **no idempotency** — Stripe delivers events *at-least-once*, so
+> processing `checkout.session.completed` twice can upgrade/charge a user twice.
+> Before shipping payments, follow **[roadmap phase-09](roadmap/phase-09-payments-stripe.md)**:
+> the `stripe_events` dedupe table (09.2), backend-owned checkout (09.5), never
+> trusting `customer_id` from the request body (09.8), redirect allow-listing with
+> mobile deep-link support (09.9), and server-side success verification (09.10).
+
 ### Install
 ```
 # requirements.txt
@@ -187,8 +195,12 @@ async def stripe_webhook(request: Request):
 
 ### Notes
 - Always verify webhook signature (prevents spoofing)
+- **Enforce idempotency** — record each `event["id"]` in a `stripe_events` table and
+  skip if already seen (see phase-09.2). Non-negotiable for correctness.
+- Mount the webhook **unversioned** (`/webhooks/stripe`) — Stripe calls a fixed URL.
+- Resolve `stripe_customer_id` from the authenticated user, never from the request body.
 - Use Railway Cron or Stripe billing portal for subscription management
-- Test with `stripe listen --forward-to localhost:8000/billing/webhook`
+- Test with `stripe listen --forward-to localhost:8000/webhooks/stripe`
 
 ---
 
