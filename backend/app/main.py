@@ -1,4 +1,5 @@
 import logging
+import secrets
 import sys
 from contextlib import asynccontextmanager
 
@@ -43,6 +44,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
         return response
 
 
@@ -68,20 +71,38 @@ class AdminIPAllowlistMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+_CF_AUTH_HEADER = "X-Origin-Auth"
+
+
 class CloudflareOnlyMiddleware(BaseHTTPMiddleware):
     """Block requests that did not pass through Cloudflare.
 
     Only active when CLOUDFLARE_ONLY=true. The /health endpoint is always allowed.
-    Detection: Cloudflare always injects CF-Connecting-IP on proxied requests.
+
+    Validates a shared secret (CLOUDFLARE_SHARED_SECRET) sent via the
+    X-Origin-Auth header, which a Cloudflare Transform Rule injects on every
+    request before it reaches the origin. This does NOT check request.client.host:
+    on platforms where a proxy sits between Cloudflare and the app (e.g. Railway),
+    the raw TCP peer is the platform's own internal proxy, never Cloudflare's edge
+    IP — checking it there blocks 100% of traffic unconditionally, including login.
+    It also does not trust CF-Connecting-IP presence alone: anyone hitting the
+    origin directly can set that header themselves.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if not settings.cloudflare_only or request.url.path == "/health":
+        # /health and third-party webhooks (Stripe, Resend, etc.) bypass the
+        # shared-secret check: webhook callers can't send the Cloudflare
+        # Transform-Rule header, and they authenticate via their own signature.
+        if (
+            not settings.cloudflare_only
+            or request.url.path == "/health"
+            or request.url.path.startswith("/webhooks/")
+        ):
             return await call_next(request)
 
-        if not request.headers.get("CF-Connecting-IP"):
-            client = request.client.host if request.client else "unknown"
-            logger.warning("Blocked request without CF-Connecting-IP from %s", client)
+        provided = request.headers.get(_CF_AUTH_HEADER, "")
+        if not provided or not secrets.compare_digest(provided, settings.cloudflare_shared_secret):
+            logger.warning("Blocked request missing/invalid %s on %s", _CF_AUTH_HEADER, request.url.path)
             return Response(content="Forbidden", status_code=403)
 
         return await call_next(request)
@@ -106,10 +127,23 @@ if len(settings.secret_key.encode()) < 32:
         "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
     )
 
+if settings.cloudflare_only and not settings.cloudflare_shared_secret:
+    raise ValueError(
+        "CLOUDFLARE_ONLY=true requires CLOUDFLARE_SHARED_SECRET to be set — "
+        "otherwise every request is blocked (see .env.example for setup). "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+
 if settings.debug:
     logger.warning(
         "FastAPI DEBUG mode is ON — full stack traces exposed in responses. "
         "Set DEBUG=false in production."
+    )
+
+if not settings.encryption_key:
+    logger.warning(
+        "ENCRYPTION_KEY not configured — falling back to SECRET_KEY for column encryption. "
+        "Set a dedicated ENCRYPTION_KEY in production for key separation."
     )
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────

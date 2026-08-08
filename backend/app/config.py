@@ -50,6 +50,13 @@ class Settings(BaseSettings):
     admin_allowed_ips: str = ""
     # Set to true in production to require Cloudflare proxy (blocks direct origin hits)
     cloudflare_only: bool = False
+    # Shared secret injected by a Cloudflare Transform Rule as the X-Origin-Auth
+    # header on every proxied request. CloudflareOnlyMiddleware validates it with
+    # a constant-time compare. Required when CLOUDFLARE_ONLY=true (startup guard
+    # fails fast otherwise). Do NOT rely on client-IP CIDR checks instead: behind
+    # Railway's internal proxy the TCP peer is never a Cloudflare edge IP, so a
+    # CIDR check blocks 100% of traffic (real production incident).
+    cloudflare_shared_secret: str = ""
     # Google Safe Browsing API key — enables URL reputation checks in
     # app.utils.url_security.check_safe_browsing (optional; fails open when empty)
     google_safe_browsing_api_key: str = ""
