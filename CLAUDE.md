@@ -27,17 +27,32 @@ Todo cambio sigue este flujo sin excepción:
 ## Stack
 
 - **Backend:** FastAPI + SQLAlchemy + Alembic + PostgreSQL
-- **Frontend:** Next.js 15 (App Router) + Tailwind CSS + NextAuth v5
-- **Auth:** JWT (PyJWT) + bcrypt, token denylist for logout revocation
+- **Frontend:** Next.js 16 (App Router) + Tailwind CSS + NextAuth v5
+- **Auth:** JWT access (30 min) + rotating refresh tokens with family reuse
+  detection (`models/refresh_token.py`), bcrypt, token denylist for access
+  revocation. `POST /v1/auth/refresh` rotates; logout revokes the family.
 - **Email:** Resend + Jinja2 templates in `backend/app/templates/emails/`
-- **Alerts:** Slack Bot via `chat.postMessage` (`utils/slack.py`)
-- **Error tracking:** Sentry (backend + frontend)
+- **Alerts:** Slack Bot via `chat.postMessage` (`utils/slack.py`), channel from
+  `SLACK_ALERT_CHANNEL`, deduped by `utils/alert_budget.py`
+- **Error tracking:** Sentry (backend + worker + frontend)
 
 ## Backend conventions
 
 - All settings come from `app/config.py` (pydantic-settings). Never hardcode values.
-- Rate limiting via `@limiter.limit()` on every public/auth endpoint.
+- Rate limiting via `@limiter.limit()` on every public/auth endpoint — **enforced
+  by `tests/test_rate_limit_coverage.py`**; deliberate exemptions go in its
+  `EXEMPT` set with a written reason. The key is `user:<sub>` with a verified
+  JWT, `ip:<ip>` otherwise (`utils/rate_limit.py` — mobile CGNAT + Vercel egress).
 - IP detection uses `utils/cloudflare.py` — always use `get_client_ip(request)`, never `request.client.host`.
+- **API contract is additive-only on `/v1`**: removing an operation or making an
+  input field required breaks installed mobile clients and fails
+  `tests/contract/test_api_contract.py`. Intentional breaks (a `/v2`) regenerate
+  the fingerprint: `python -m tests.contract.test_api_contract`.
+- List endpoints return `Page[T]` (`schemas/pagination.py`) via
+  `BaseRepository.paginate()` — never a bare array.
+- **Adding a cron = 3 edits in the same commit:** the decorated function in
+  `worker.py`, its window in `services/cron_heartbeat.CRON_MAX_AGE`, its human
+  consequence in `worker._CRON_PROMISES`.
 - New models must be imported in `alembic/env.py` for autogenerate to work.
 - Email functions go in `app/email.py`. Templates in `app/templates/emails/*.html`.
   Always add `<meta name="color-scheme" content="light">` to email templates (Gmail dark mode).
@@ -96,7 +111,13 @@ raise api_error("EMAIL_TAKEN", "Email already registered", field="email")
 ### Pydantic v2 strict mode
 
 All schemas extend `StrictModel` (input) or `StrictORMModel` (ORM output) from `app/schemas/_base.py`.
-This prevents silent type coercions (e.g. `"1"` auto-converted to `1`).
+This prevents silent type coercions (e.g. `"1"` auto-converted to `1`), and
+`extra="forbid"` rejects unknown fields (anti mass-assignment).
+
+**JSON input fields of type UUID/date/datetime/Decimal must use the
+`StrictUUID`/`StrictDate`/`StrictDatetime`/`StrictDecimal` aliases** from
+`_base.py` — a bare `UUID` under `strict=True` rejects every real JSON request
+(JSON has no native UUID; the client can only send the string form).
 
 ### Login lockout
 
@@ -106,10 +127,17 @@ lockout after 10 consecutive failures for 15 minutes. Reset to 0 on successful l
 ## Frontend conventions
 
 - All mutations go in `src/lib/actions.ts` with `"use server"`.
-- API calls use `apiFetch` from `src/lib/api.ts`.
+- API calls use `apiFetch` from `src/lib/api.ts` — it throws `ApiError` carrying
+  `status` + machine-readable `code`; branch on `code`, never string-match messages.
 - Auth: use `auth()` from `@/auth` in Server Components, `useSession` in Client Components.
-  Never use `getServerSession`.
-- No test files — verify manually by running `npm run dev`.
+  Never use `getServerSession`. The refresh token never reaches the client —
+  the `session` callback copies `accessToken` only.
+- Server-to-server calls to the backend get `X-Origin-Auth` automatically via the
+  global fetch interceptor (`src/lib/backend-origin-auth.ts`, installed in
+  `instrumentation.ts`) — never add the header by hand in handlers.
+- Tests: Vitest (`npm test`) for lib/util logic; UI verified manually with `npm run dev`.
+- Sentry: client init lives in `instrumentation-client.ts` (Sentry 10 does NOT
+  read `sentry.client.config.ts` — the old filename silently never loads).
 
 ## Git workflow
 
