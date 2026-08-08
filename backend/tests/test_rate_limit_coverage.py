@@ -88,6 +88,11 @@ def test_exempt_routes_still_exist():
     assert EXEMPT <= names
 
 
+def test_the_public_job_health_endpoint_is_limited():
+    """It's public and queries the database on every visit: unlimited, it's an open tap."""
+    assert "health_jobs" in _limited_endpoints()
+
+
 def test_the_walk_reaches_the_routes_behind_included_routers():
     """Guard for the walk itself.
 

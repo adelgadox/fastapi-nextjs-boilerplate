@@ -12,6 +12,7 @@ from app.database import Base
 import app.models.user          # noqa: F401
 import app.models.token_denylist  # noqa: F401
 import app.models.refresh_token  # noqa: F401
+import app.models.cron_run      # noqa: F401
 
 config = context.config
 # Use the direct (non-PgBouncer) URL for migrations when available — PgBouncer

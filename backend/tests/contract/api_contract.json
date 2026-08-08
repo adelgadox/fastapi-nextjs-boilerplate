@@ -1,5 +1,6 @@
 {
   "GET /health": [],
+  "GET /health/jobs": [],
   "GET /v1/auth/me": [],
   "GET /v1/auth/verify-email": [],
   "GET /v1/client/version": [],

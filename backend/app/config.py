@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     # Bot Token from api.slack.com → Your App → OAuth & Permissions (xoxb-...)
     # One token covers all channels; invite bot to each channel with /invite @bot
     slack_bot_token: str = ""
+    # Channel where 500/cron alerts land (e.g. #backend-alerts). Lives in env,
+    # not code: the workspace belongs to whoever operates the deploy — a fork
+    # of this repo must not inherit anyone's channel. Empty = alerts stay in
+    # the log only.
+    slack_alert_channel: str = ""
 
     # ── OAuth — Google (optional) ─────────────────────────────────────────────
     google_client_id: str = ""
