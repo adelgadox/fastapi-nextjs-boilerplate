@@ -18,7 +18,14 @@ class Settings(BaseSettings):
     # ── JWT ───────────────────────────────────────────────────────────────────
     secret_key: str
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24  # 24 hours
+    # Short-lived on purpose: clients renew via /v1/auth/refresh with a rotating
+    # refresh token. A stolen access token is only useful for minutes, not days.
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 30
+    # Grace window for a client double-firing two refreshes ~simultaneously
+    # (e.g. two screens renewing on app resume). Inside this window, reusing a
+    # just-rotated token is treated as benign instead of theft.
+    refresh_reuse_leeway_seconds: int = 10
 
     # ── Encryption ────────────────────────────────────────────────────────────
     # Fernet key for app.utils.crypto (encrypting sensitive DB values such as

@@ -3,8 +3,19 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import require_internal_token
-from app.schemas.auth import ForgotPasswordRequest, OAuthLogin, ResendRequest, ResetPasswordRequest, Token, UserCreate
+from app.dependencies import get_current_user, require_internal_token
+from app.models.user import User
+from app.schemas.auth import (
+    ForgotPasswordRequest,
+    LogoutRequest,
+    OAuthLogin,
+    RefreshRequest,
+    ResendRequest,
+    ResetPasswordRequest,
+    Token,
+    UserCreate,
+    UserOut,
+)
 from app.services.auth_service import AuthService
 from app.utils.rate_limit import limiter
 
@@ -47,14 +58,37 @@ def oauth_login(
     return AuthService(db).oauth_login(data)
 
 
+@router.post("/refresh", response_model=Token)
+@limiter.limit("30/minute")
+def refresh(
+    request: Request,
+    data: RefreshRequest,
+    db: Session = Depends(get_db),
+):
+    """Renew the access token from a valid refresh token, rotating it.
+
+    Anonymous by design: the access token already expired and the refresh is
+    the only credential. Rate-limited by IP (there is no session to key by)
+    and the token itself detects reuse.
+    """
+    return AuthService(db).refresh(data.refresh_token)
+
+
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("10/minute")
 def logout(
     request: Request,
+    data: LogoutRequest | None = None,
     token: str = Depends(_oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> None:
-    AuthService(db).logout(token)
+    AuthService(db).logout(token, refresh_token=data.refresh_token if data else None)
+
+
+@router.get("/me", response_model=UserOut)
+@limiter.limit("120/minute")
+def get_me(request: Request, current_user: User = Depends(get_current_user)):
+    return current_user
 
 
 @router.get("/verify-email")

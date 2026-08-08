@@ -26,6 +26,7 @@ from app.routers import auth
 # ── Models (ensure tables are registered with SQLAlchemy) ─────────────────────
 from app.models import user as _user_model          # noqa: F401
 from app.models import token_denylist as _token_denylist_model  # noqa: F401
+from app.models import refresh_token as _refresh_token_model  # noqa: F401
 
 logging.basicConfig(
     level=logging.INFO,
