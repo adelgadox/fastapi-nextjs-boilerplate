@@ -21,7 +21,7 @@ from app.utils.cloudflare import get_client_ip
 from app.utils.rate_limit import limiter
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-from app.routers import auth
+from app.routers import auth, client
 
 # ── Models (ensure tables are registered with SQLAlchemy) ─────────────────────
 from app.models import user as _user_model          # noqa: F401
@@ -162,7 +162,16 @@ async def lifespan(app: FastAPI):
 
 # ── App ────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+# Gate /docs, /redoc and /openapi.json behind EXPOSE_API_DOCS: in production
+# the full API surface should not be publicly enumerable when the rest of the
+# posture (Cloudflare-only origin, admin IP allowlist) says otherwise.
+_docs_kwargs = (
+    {}
+    if settings.expose_api_docs
+    else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+)
+
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan, **_docs_kwargs)
 app.state.limiter = limiter
 
 
@@ -267,6 +276,7 @@ app.add_middleware(
 _V1 = "/v1"
 
 app.include_router(auth.router, prefix=_V1)
+app.include_router(client.router, prefix=_V1)
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
