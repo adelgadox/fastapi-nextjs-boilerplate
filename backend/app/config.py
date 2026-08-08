@@ -18,13 +18,35 @@ class Settings(BaseSettings):
     # ── JWT ───────────────────────────────────────────────────────────────────
     secret_key: str
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60 * 24  # 24 hours
+    # Short-lived on purpose: clients renew via /v1/auth/refresh with a rotating
+    # refresh token. A stolen access token is only useful for minutes, not days.
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 30
+    # Grace window for a client double-firing two refreshes ~simultaneously
+    # (e.g. two screens renewing on app resume). Inside this window, reusing a
+    # just-rotated token is treated as benign instead of theft.
+    refresh_reuse_leeway_seconds: int = 10
 
     # ── Encryption ────────────────────────────────────────────────────────────
     # Fernet key for app.utils.crypto (encrypting sensitive DB values such as
     # third-party API keys). Falls back to secret_key when empty; prefer a
     # dedicated key in production. Generate: python -c "import secrets; print(secrets.token_hex(32))"
     encryption_key: str = ""
+
+    # ── Native client version gate ────────────────────────────────────────────
+    # The web deploys alongside the backend; an installed native app (Flutter)
+    # does not — it may run a months-old binary. GET /v1/client/version lets the
+    # app ask "am I still supported?" and show "update to continue" instead of
+    # breaking against a changed contract. "0.0.0" = gate off. Set by whoever
+    # operates the deploy when publishing an app version — not in this repo.
+    min_supported_client_version: str = "0.0.0"
+    latest_client_version: str = "0.0.0"
+
+    # ── API docs exposure ─────────────────────────────────────────────────────
+    # /docs, /redoc and /openapi.json are on in dev but should be off (or
+    # gated) in production: leaving the full API surface publicly enumerable is
+    # inconsistent with running an IP allowlist + Cloudflare-only origin.
+    expose_api_docs: bool = True
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # Comma-separated list of allowed origins (multi-origin CORS support)
@@ -50,6 +72,13 @@ class Settings(BaseSettings):
     admin_allowed_ips: str = ""
     # Set to true in production to require Cloudflare proxy (blocks direct origin hits)
     cloudflare_only: bool = False
+    # Shared secret injected by a Cloudflare Transform Rule as the X-Origin-Auth
+    # header on every proxied request. CloudflareOnlyMiddleware validates it with
+    # a constant-time compare. Required when CLOUDFLARE_ONLY=true (startup guard
+    # fails fast otherwise). Do NOT rely on client-IP CIDR checks instead: behind
+    # Railway's internal proxy the TCP peer is never a Cloudflare edge IP, so a
+    # CIDR check blocks 100% of traffic (real production incident).
+    cloudflare_shared_secret: str = ""
     # Google Safe Browsing API key — enables URL reputation checks in
     # app.utils.url_security.check_safe_browsing (optional; fails open when empty)
     google_safe_browsing_api_key: str = ""
@@ -68,6 +97,11 @@ class Settings(BaseSettings):
     # Bot Token from api.slack.com → Your App → OAuth & Permissions (xoxb-...)
     # One token covers all channels; invite bot to each channel with /invite @bot
     slack_bot_token: str = ""
+    # Channel where 500/cron alerts land (e.g. #backend-alerts). Lives in env,
+    # not code: the workspace belongs to whoever operates the deploy — a fork
+    # of this repo must not inherit anyone's channel. Empty = alerts stay in
+    # the log only.
+    slack_alert_channel: str = ""
 
     # ── OAuth — Google (optional) ─────────────────────────────────────────────
     google_client_id: str = ""

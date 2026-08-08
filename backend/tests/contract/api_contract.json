@@ -1,0 +1,30 @@
+{
+  "GET /health": [],
+  "GET /health/jobs": [],
+  "GET /v1/auth/me": [],
+  "GET /v1/auth/verify-email": [],
+  "GET /v1/client/version": [],
+  "POST /v1/auth/forgot-password": [
+    "email"
+  ],
+  "POST /v1/auth/login": [],
+  "POST /v1/auth/logout": [],
+  "POST /v1/auth/oauth": [
+    "email"
+  ],
+  "POST /v1/auth/refresh": [
+    "refresh_token"
+  ],
+  "POST /v1/auth/register": [
+    "email",
+    "password",
+    "username"
+  ],
+  "POST /v1/auth/resend-verification": [
+    "email"
+  ],
+  "POST /v1/auth/reset-password": [
+    "new_password",
+    "token"
+  ]
+}

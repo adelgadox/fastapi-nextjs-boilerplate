@@ -1,29 +1,20 @@
 "use server"
 
-import { signIn, signOut, auth } from "@/auth"
+import { signIn, signOut } from "@/auth"
 import { AuthError } from "next-auth"
 import { redirect } from "next/navigation"
 import { revalidatePath } from "next/cache"
-import { apiFetch } from "@/lib/api"
-
-const API_URL = process.env.API_URL ?? "http://localhost:8000"
-
-function extractError(body: Record<string, unknown>, fallback = "Something went wrong"): string {
-  // New error envelope: { error: { code, message, field } }
-  const env = body.error as Record<string, unknown> | undefined
-  if (env?.message && typeof env.message === "string") return env.message
-  // Legacy / passthrough
-  const detail = body.detail
-  if (!detail) return fallback
-  if (typeof detail === "string") return detail
-  if (Array.isArray(detail)) return (detail[0] as Record<string, unknown>)?.msg as string ?? fallback
-  return fallback
-}
+import { apiFetch, ApiError } from "@/lib/api"
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
 export async function loginAction(_: unknown, formData: FormData) {
-  const callbackUrl = (formData.get("callbackUrl") as string | null) || "/dashboard"
+  const rawCallback = (formData.get("callbackUrl") as string | null) ?? ""
+  // Only allow same-origin relative paths — an absolute URL here would be an
+  // open redirect after login.
+  const callbackUrl =
+    rawCallback.startsWith("/") && !rawCallback.startsWith("//") ? rawCallback : "/dashboard"
+
   try {
     await signIn("credentials", {
       identifier: formData.get("identifier") as string,
@@ -42,35 +33,38 @@ export async function loginAction(_: unknown, formData: FormData) {
 }
 
 export async function registerAction(_: unknown, formData: FormData) {
-  const body = {
-    email: formData.get("email"),
-    password: formData.get("password"),
-    username: formData.get("username"),
-    full_name: formData.get("full_name") || undefined,
+  const email = formData.get("email") as string
+
+  try {
+    await apiFetch("/v1/auth/register", {
+      method: "POST",
+      body: JSON.stringify({
+        email,
+        password: formData.get("password"),
+        username: formData.get("username"),
+        full_name: formData.get("full_name") || undefined,
+      }),
+    })
+  } catch (error) {
+    if (error instanceof ApiError) {
+      // Branch on the machine-readable code, not the human message.
+      if (error.code === "EMAIL_TAKEN") return { error: "Email already registered", field: "email" }
+      if (error.code === "USERNAME_TAKEN")
+        return { error: "Username already taken", field: "username" }
+      return { error: error.message, field: error.field }
+    }
+    return { error: "Registration failed" }
   }
 
-  const res = await fetch(`${API_URL}/v1/auth/register`, {
-    method: "POST",
-    body: JSON.stringify(body),
-    headers: { "Content-Type": "application/json" },
-  })
-
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    return { error: extractError(data, "Registration failed") }
-  }
-
-  redirect(`/verify-email?email=${encodeURIComponent(body.email as string)}`)
+  // redirect() throws; it must run outside the try/catch above.
+  redirect(`/verify-email?email=${encodeURIComponent(email)}`)
 }
 
 export async function logoutAction() {
-  const session = await auth()
-  if (session?.accessToken) {
-    await fetch(`${API_URL}/v1/auth/logout`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${session.accessToken}` },
-    }).catch(() => {})
-  }
+  // Backend revocation of the refresh token family (and the access token)
+  // happens in the NextAuth signOut event (src/auth.ts), which reads the
+  // refresh token from the encrypted cookie without ever exposing it here.
+  // This action only ends the local session.
   await signOut({ redirectTo: "/login" })
 }
 

@@ -1,4 +1,5 @@
 import logging
+import secrets
 import sys
 from contextlib import asynccontextmanager
 
@@ -6,7 +7,7 @@ import sentry_sdk
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -16,15 +17,18 @@ from starlette.middleware.gzip import GZipMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.config import settings
+from app.database import get_db
 from app.utils.cloudflare import get_client_ip
 from app.utils.rate_limit import limiter
 
 # ── Routers ────────────────────────────────────────────────────────────────────
-from app.routers import auth
+from app.routers import auth, client
 
 # ── Models (ensure tables are registered with SQLAlchemy) ─────────────────────
 from app.models import user as _user_model          # noqa: F401
 from app.models import token_denylist as _token_denylist_model  # noqa: F401
+from app.models import refresh_token as _refresh_token_model  # noqa: F401
+from app.models import cron_run as _cron_run_model  # noqa: F401
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +47,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
         return response
 
 
@@ -68,20 +74,38 @@ class AdminIPAllowlistMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+_CF_AUTH_HEADER = "X-Origin-Auth"
+
+
 class CloudflareOnlyMiddleware(BaseHTTPMiddleware):
     """Block requests that did not pass through Cloudflare.
 
     Only active when CLOUDFLARE_ONLY=true. The /health endpoint is always allowed.
-    Detection: Cloudflare always injects CF-Connecting-IP on proxied requests.
+
+    Validates a shared secret (CLOUDFLARE_SHARED_SECRET) sent via the
+    X-Origin-Auth header, which a Cloudflare Transform Rule injects on every
+    request before it reaches the origin. This does NOT check request.client.host:
+    on platforms where a proxy sits between Cloudflare and the app (e.g. Railway),
+    the raw TCP peer is the platform's own internal proxy, never Cloudflare's edge
+    IP — checking it there blocks 100% of traffic unconditionally, including login.
+    It also does not trust CF-Connecting-IP presence alone: anyone hitting the
+    origin directly can set that header themselves.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if not settings.cloudflare_only or request.url.path == "/health":
+        # /health and third-party webhooks (Stripe, Resend, etc.) bypass the
+        # shared-secret check: webhook callers can't send the Cloudflare
+        # Transform-Rule header, and they authenticate via their own signature.
+        if (
+            not settings.cloudflare_only
+            or request.url.path == "/health"
+            or request.url.path.startswith("/webhooks/")
+        ):
             return await call_next(request)
 
-        if not request.headers.get("CF-Connecting-IP"):
-            client = request.client.host if request.client else "unknown"
-            logger.warning("Blocked request without CF-Connecting-IP from %s", client)
+        provided = request.headers.get(_CF_AUTH_HEADER, "")
+        if not provided or not secrets.compare_digest(provided, settings.cloudflare_shared_secret):
+            logger.warning("Blocked request missing/invalid %s on %s", _CF_AUTH_HEADER, request.url.path)
             return Response(content="Forbidden", status_code=403)
 
         return await call_next(request)
@@ -106,10 +130,23 @@ if len(settings.secret_key.encode()) < 32:
         "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
     )
 
+if settings.cloudflare_only and not settings.cloudflare_shared_secret:
+    raise ValueError(
+        "CLOUDFLARE_ONLY=true requires CLOUDFLARE_SHARED_SECRET to be set — "
+        "otherwise every request is blocked (see .env.example for setup). "
+        "Generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+
 if settings.debug:
     logger.warning(
         "FastAPI DEBUG mode is ON — full stack traces exposed in responses. "
         "Set DEBUG=false in production."
+    )
+
+if not settings.encryption_key:
+    logger.warning(
+        "ENCRYPTION_KEY not configured — falling back to SECRET_KEY for column encryption. "
+        "Set a dedicated ENCRYPTION_KEY in production for key separation."
     )
 
 # ── Lifespan ─────────────────────────────────────────────────────────────────
@@ -127,7 +164,16 @@ async def lifespan(app: FastAPI):
 
 # ── App ────────────────────────────────────────────────────────────────────────
 
-app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
+# Gate /docs, /redoc and /openapi.json behind EXPOSE_API_DOCS: in production
+# the full API surface should not be publicly enumerable when the rest of the
+# posture (Cloudflare-only origin, admin IP allowlist) says otherwise.
+_docs_kwargs = (
+    {}
+    if settings.expose_api_docs
+    else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+)
+
+app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan, **_docs_kwargs)
 app.state.limiter = limiter
 
 
@@ -172,9 +218,20 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONRe
 
 
 async def _alert_500(path: str, exc: Exception) -> None:
-    """Send a Slack 500 alert enriched with Railway/Vercel infra status."""
+    """Send a Slack 500 alert enriched with Railway/Vercel infra status.
+
+    A broken route breaks for everyone at once: without grouping, one dead
+    endpoint fills the channel in a minute and hides everything else. The
+    problem identity is the route plus the exception type (noise budget).
+    """
+    import asyncio
+
     from app.utils.slack import notify_slack
+    from app.utils.alert_budget import should_send
     from app.utils.infra_status import get_infra_status, build_slack_context
+
+    if not await asyncio.to_thread(should_send, f"500:{path}:{type(exc).__name__}"):
+        return
 
     context = ""
     try:
@@ -185,7 +242,7 @@ async def _alert_500(path: str, exc: Exception) -> None:
     await notify_slack(
         f":rotating_light: *Backend 500* — `{path}`\n"
         f"```{type(exc).__name__}: {exc}```" + context,
-        channel="#backend-alerts",
+        channel=settings.slack_alert_channel,
     )
 
 
@@ -232,10 +289,46 @@ app.add_middleware(
 _V1 = "/v1"
 
 app.include_router(auth.router, prefix=_V1)
+app.include_router(client.router, prefix=_V1)
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
+    return {"status": "ok"}
+
+
+# GET and HEAD both registered: free uptime services often probe with HEAD, and
+# FastAPI does not add HEAD by itself when declaring GET — the monitor would get
+# a 405 on the very route that exists for it to consult.
+@app.api_route("/health/jobs", methods=["GET", "HEAD"])
+@limiter.limit("30/minute")
+def health_jobs(request: Request, response: Response, db=Depends(get_db)):
+    """Background-work status, for external monitoring.
+
+    Exists because of a structural limitation: the internal watchdog is itself
+    a cron, so if the whole worker stops starting it dies with the rest and
+    alerts nothing. A watchdog cannot detect its own death. This question is
+    asked from outside the process that might be dead.
+
+    Answers **503 when something fell behind** because a free uptime service
+    only understands status codes; a 200 with a sad body would go unnoticed.
+
+    Public and sessionless, so it says *that* something is behind, not *what*:
+    publishing which cron, since when, and how often it runs would be internal
+    detail with no need to exist.
+    """
+    from app.services.cron_heartbeat import stale_crons
+
+    try:
+        stale = stale_crons(db)
+    except Exception:
+        # If it can't even be consulted, something bigger is broken.
+        response.status_code = 503
+        return {"status": "unknown"}
+
+    if stale:
+        response.status_code = 503
+        return {"status": "stale", "count": len(stale)}
     return {"status": "ok"}

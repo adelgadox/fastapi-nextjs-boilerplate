@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import secrets
 import uuid
@@ -10,8 +11,10 @@ from sqlalchemy.orm import Session
 
 from app.arq_pool import enqueue
 from app.config import settings
+from app.models.refresh_token import RefreshToken
 from app.models.token_denylist import TokenDenylist
 from app.models.user import User
+from app.repositories.refresh_token_repository import RefreshTokenRepository
 from app.repositories.token_denylist_repository import TokenDenylistRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import OAuthLogin, UserCreate
@@ -22,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 _LOCKOUT_THRESHOLD = 10
 _LOCKOUT_MINUTES = 15
+# Pre-computed dummy hash used for constant-time rejection of unknown users
+_DUMMY_HASH = bcrypt.hashpw(b"__dummy_sentinel__", bcrypt.gensalt()).decode()
 
 
 class AuthService(BaseService):
@@ -37,6 +42,108 @@ class AuthService(BaseService):
             settings.secret_key,
             algorithm=settings.algorithm,
         )
+
+    # ── Refresh tokens ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _hash_refresh_token(raw: str) -> str:
+        """SHA-256 of the raw token. Only the hash ever touches the database."""
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    def _create_refresh_token(self, user_id: uuid.UUID, family_id: uuid.UUID | None = None) -> str:
+        """Create a refresh token and return the raw value (never stored).
+
+        `family_id` None starts a new family (one login); passing one continues
+        the existing chain on rotation.
+        """
+        raw = secrets.token_urlsafe(48)
+        row = RefreshToken(
+            user_id=user_id,
+            token_hash=self._hash_refresh_token(raw),
+            family_id=family_id or uuid.uuid4(),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_expire_days),
+        )
+        RefreshTokenRepository(self.db).save(row)
+        return raw
+
+    def _issue_session(self, user: User) -> dict:
+        """Full session response: short access + long-lived refresh.
+
+        The single place where it's assembled; login and oauth_login share it
+        so they never diverge. `expires_in` (seconds) lets clients schedule
+        renewal without decoding the JWT.
+        """
+        return {
+            "access_token": self.create_access_token(str(user.id)),
+            "refresh_token": self._create_refresh_token(user.id),
+            "token_type": "bearer",
+            "expires_in": settings.access_token_expire_minutes * 60,
+        }
+
+    def _is_benign_reuse(self, repo: RefreshTokenRepository, row: RefreshToken) -> bool:
+        """True when reusing this revoked token is a client double-fire.
+
+        Benign if it was replaced very recently (grace window) and its
+        replacement is still live: two renewals that went out almost at once.
+        A later reuse, or one where the chain already moved on (the replacement
+        was also revoked), is suspect and doesn't enter here.
+        """
+        if row.replaced_by is None:
+            return False
+        replacement = repo.find_by_id(row.replaced_by)
+        if replacement is None or replacement.revoked or replacement.created_at is None:
+            return False
+        leeway = timedelta(seconds=settings.refresh_reuse_leeway_seconds)
+        return datetime.now(timezone.utc) - replacement.created_at.replace(tzinfo=timezone.utc) <= leeway
+
+    def refresh(self, raw_token: str) -> dict:
+        """Rotate a refresh token: issue a new one and revoke the presented one.
+
+        Reuse detection: if the presented token was already revoked, someone
+        reused an old link of the chain — a theft signal — and the entire
+        family is revoked. An expired or unknown token is a normal 401.
+        """
+        repo = RefreshTokenRepository(self.db)
+        row = repo.find_by_hash(self._hash_refresh_token(raw_token))
+        if row is None:
+            raise api_error("INVALID_REFRESH_TOKEN", "Invalid refresh token", status_code=401)
+
+        if row.revoked:
+            if not self._is_benign_reuse(repo, row):
+                # Real reuse of an old token: cut the whole session.
+                repo.revoke_family(row.family_id)
+                raise api_error("REFRESH_TOKEN_REUSED", "Refresh token reuse detected", status_code=401)
+            # Concurrent client double-fire inside the grace window: not theft.
+            # Continue and issue a fresh rotation.
+
+        if row.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+            raise api_error("REFRESH_TOKEN_EXPIRED", "Refresh token expired", status_code=401)
+
+        user = UserRepository(self.db).find_by_id(row.user_id)
+        if user is None or not user.is_active:
+            raise api_error("INVALID_REFRESH_TOKEN", "Invalid refresh token", status_code=401)
+
+        # Rotate within the same family and chain the replacement.
+        new_raw = self._create_refresh_token(user.id, family_id=row.family_id)
+        new_row = repo.find_by_hash(self._hash_refresh_token(new_raw))
+        row.revoked = True
+        row.replaced_by = new_row.id if new_row else None
+        self.db.commit()
+
+        return {
+            "access_token": self.create_access_token(str(user.id)),
+            "refresh_token": new_raw,
+            "token_type": "bearer",
+            "expires_in": settings.access_token_expire_minutes * 60,
+        }
+
+    def revoke_refresh_token(self, raw_token: str) -> None:
+        """Revoke a refresh token's family (logout). Silent when the token
+        doesn't exist: logging out must not leak whether it was valid."""
+        repo = RefreshTokenRepository(self.db)
+        row = repo.find_by_hash(self._hash_refresh_token(raw_token))
+        if row is not None:
+            repo.revoke_family(row.family_id)
 
     @staticmethod
     def hash_password(password: str) -> str:
@@ -82,7 +189,13 @@ class AuthService(BaseService):
         user = UserRepository(self.db).find_active_by_identifier(identifier)
 
         if not user or not user.hashed_password:
+            # Constant-time response: always run bcrypt to prevent timing oracle
+            bcrypt.checkpw(password.encode(), _DUMMY_HASH.encode())
             raise api_error("INVALID_CREDENTIALS", "Invalid credentials", status_code=401)
+
+        # Check account status before spending time on bcrypt
+        if not user.is_active:
+            raise api_error("ACCOUNT_DISABLED", "Account is disabled", status_code=403)
 
         now = datetime.now(timezone.utc)
         if user.lockout_until and user.lockout_until.replace(tzinfo=timezone.utc) > now:
@@ -112,14 +225,16 @@ class AuthService(BaseService):
         user.lockout_until = None
         self.db.commit()
 
-        if not user.is_active:
-            raise api_error("ACCOUNT_DISABLED", "Account is disabled", status_code=403)
         if not user.is_verified:
             raise api_error("EMAIL_NOT_VERIFIED", "Email address not verified", status_code=403)
 
-        return {"access_token": self.create_access_token(str(user.id)), "token_type": "bearer"}
+        return self._issue_session(user)
 
-    def logout(self, token: str) -> None:
+    def logout(self, token: str, refresh_token: str | None = None) -> None:
+        # Revoke the refresh family so a leaked token doesn't outlive the
+        # session; the access token is invalidated by its jti below.
+        if refresh_token:
+            self.revoke_refresh_token(refresh_token)
         try:
             payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
             jti: str | None = payload.get("jti")
@@ -183,7 +298,7 @@ class AuthService(BaseService):
                 registered_provider=data.provider,
             ))
 
-        return {"access_token": self.create_access_token(str(user.id)), "token_type": "bearer"}
+        return self._issue_session(user)
 
     # ── Password reset ─────────────────────────────────────────────────────────
 
