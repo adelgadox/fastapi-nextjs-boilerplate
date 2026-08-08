@@ -27,6 +27,10 @@ redis==5.3.1         # Redis client (cache + arq transport)
 # ── Crypto — Fernet symmetric encryption for sensitive DB-stored values ───────
 cryptography>=42.0.8
 
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==9.1.1
+pytest-cov==7.0.0
+
 # ── Optional layers ───────────────────────────────────────────────────────────
 # Uncomment the section(s) you need. See docs/optional-layers.md for setup.
 
