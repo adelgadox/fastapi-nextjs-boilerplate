@@ -58,8 +58,9 @@ jobs:
           # The version the app is built and deployed with. Auditing a
           # different runtime than the one that ships audits the wrong tree.
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          # No `cache: npm`. Nothing is installed any more, so there is
+          # nothing to restore — and a cache that is written and never read
+          # still costs the time to save it.
 
       - uses: actions/setup-python@v7
         with:
@@ -67,10 +68,13 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
 
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: npm ci --prefer-offline
-
+      # No `npm ci` here. `npm audit` resolves the tree from
+      # package-lock.json and asks the registry about it — it never reads
+      # node_modules. Installing first added about 25 seconds to every run to
+      # produce a directory nothing then looked at. Verified against this
+      # repository's own pre-patch lockfile: with no node_modules at all, the
+      # audit still reported the same 4 advisories (1 critical, 3 high) in
+      # under a second.
       - name: Audit frontend for HIGH/CRITICAL CVEs
         working-directory: frontend
         run: npm audit --audit-level=high --omit=dev
