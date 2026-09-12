@@ -75,11 +75,18 @@ jobs:
         working-directory: frontend
         run: npm audit --audit-level=high --omit=dev
 
+      # This condition has to be on the install too, not only on the audit
+      # below. A failing step stops the job, so without it the install is
+      # skipped when the frontend audit finds something and the backend audit
+      # then fails with `pip-audit: command not found` — reporting a tooling
+      # error where there was a real answer to give. Two separate jobs did not
+      # need this; one job does, and that is the cost of merging them.
       - name: Install pip-audit
+        if: ${{ !cancelled() }}
         run: pip install pip-audit==2.7.3
 
-      # `always()` so a frontend advisory does not hide a backend one: both
-      # audits report in the same run, and the run fails if either did.
+      # So a frontend advisory does not hide a backend one: both audits report
+      # in the same run, and the run fails if either did.
       - name: Audit backend for known CVEs
         if: ${{ !cancelled() }}
         working-directory: backend
