@@ -7,6 +7,16 @@ on:
   pull_request:
     paths: ["frontend/**", ".github/workflows/frontend-tests.yml"]
 
+# Hygiene rather than a saving: this cancels a run only when a second push
+# lands while the first is still going. It bounds a burst; it does not cut a
+# steady bill.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -14,8 +24,8 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
